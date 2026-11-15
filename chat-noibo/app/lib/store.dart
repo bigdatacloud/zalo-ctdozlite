@@ -42,6 +42,9 @@ class AppState extends ChangeNotifier {
   List<Conversation> conversations = [];
   final Map<String, List<Message>> messages = {};
   final Map<String, bool> hasMore = {};
+  /// Tệp chờ duyệt theo hội thoại (người gửi thấy của mình, người duyệt thấy tất cả).
+  final Map<String, List<Approval>> pending = {};
+  final Set<String> _dismissed = {};
   String? activeId;
   bool online = false;
 
@@ -103,6 +106,7 @@ class AppState extends ChangeNotifier {
     conversations = [];
     messages.clear();
     hasMore.clear();
+    pending.clear();
     activeId = null;
     notice = reason;
     if (!_disposed) notifyListeners();
@@ -110,6 +114,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> _afterLogin() async {
     await refreshConversations();
+    await refreshApprovals();
     _connectWs();
   }
 
@@ -136,9 +141,56 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  /// Tải các yêu cầu duyệt mà tôi xử lý được, để hiện số đếm trên danh sách hội thoại.
+  Future<void> refreshApprovals() async {
+    if (me == null || me!.isExternal) return;
+    try {
+      final list = await api.approvals();
+      for (final c in conversations.where((c) => c.policy.canApprove)) {
+        pending[c.id] = [
+          ...list.where((a) => a.conversationId == c.id),
+          ...?pending[c.id]?.where((a) => a.senderId == me!.userId && !a.isPending),
+        ];
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  List<Approval> pendingFor(String convId) =>
+      (pending[convId] ?? const []).where((a) => !_dismissed.contains(a.id)).toList();
+
+  int approvalsWaiting(String convId) =>
+      (pending[convId] ?? const []).where((a) => a.isPending && a.senderId != me?.userId).length;
+
+  void dismissApproval(String id) {
+    _dismissed.add(id);
+    notifyListeners();
+  }
+
+  Future<void> approve(Approval a) async => guard(() => api.approve(a.id));
+  Future<void> reject(Approval a, String reason) async => guard(() => api.reject(a.id, reason));
+  Future<void> cancelApproval(Approval a) async => guard(() => api.cancelApproval(a.id));
+
+  void _onApproval(Approval a) {
+    final list = [...?pending[a.conversationId]]..removeWhere((x) => x.id == a.id);
+    final keep = a.isPending || (a.status == 'rejected' && a.senderId == me?.userId);
+    if (keep) list.add(a);
+    pending[a.conversationId] = list;
+    notifyListeners();
+  }
+
   Future<void> open(String id) async {
     activeId = id;
     notifyListeners();
+    final c0 = conv(id);
+    if (c0 != null && c0.external && !(me?.isExternal ?? true)) {
+      guard(() => api.pending(id)).then((l) {
+        if (l != null) {
+          pending[id] = l;
+          notifyListeners();
+        }
+      }).catchError((_) {});
+    }
     if (!messages.containsKey(id)) {
       final list = await guard(() => api.messages(id));
       messages[id] = list ?? [];
@@ -184,9 +236,13 @@ class AppState extends ChangeNotifier {
     if (m != null) _upsert(m);
   }
 
-  Future<void> sendFile(String convId, String name, String mime, Uint8List bytes) async {
-    final m = await guard(() => api.sendFile(convId, name, mime, bytes, newClientId()));
-    if (m != null) _upsert(m);
+  /// Trả về true nếu tệp đang chờ duyệt.
+  Future<bool> sendFile(String convId, String name, String mime, Uint8List bytes) async {
+    final r = await guard(() => api.sendFile(convId, name, mime, bytes, newClientId()));
+    if (r == null) return false;
+    if (r.$1 != null) _upsert(r.$1!);
+    if (r.$2 != null) _onApproval(r.$2!);
+    return r.$2 != null;
   }
 
   Future<void> forward(Message m, String targetId) async {
@@ -275,7 +331,7 @@ class AppState extends ChangeNotifier {
         online = true;
         _backoff = 1;
         if (wasOffline) {
-          refreshConversations().catchError((_) {});
+          refreshConversations().then((_) => refreshApprovals()).catchError((_) {});
           if (activeId != null) _catchUp(activeId!).catchError((_) {});
         }
         notifyListeners();
@@ -283,7 +339,9 @@ class AppState extends ChangeNotifier {
       case 'message_updated':
         _upsert(Message.fromJson(ev['message']));
       case 'conversation_changed':
-        refreshConversations().catchError((_) {});
+        refreshConversations().then((_) => refreshApprovals()).catchError((_) {});
+      case 'approval_changed':
+        if (ev['approval'] != null) _onApproval(Approval.fromJson(ev['approval']));
       case 'revoked':
         _wipe(ev['reason'] ?? 'Phiên đăng nhập đã bị thu hồi');
     }

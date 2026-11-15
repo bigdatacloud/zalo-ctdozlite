@@ -38,13 +38,15 @@ class Me {
 }
 
 class Policy {
-  final bool canUpload, canForwardOut, canCopy;
+  final bool canUpload, canForwardOut, canCopy, needsApproval, canApprove;
   /// 'allow' | 'view' | 'deny'
   final String fileAccess;
   Policy.fromJson(Map<String, dynamic> j)
       : canUpload = j['can_upload'] == true,
         canForwardOut = j['can_forward_out'] == true,
         canCopy = j['can_copy'] == true,
+        needsApproval = j['needs_approval'] == true,
+        canApprove = j['can_approve'] == true,
         fileAccess = j['file_access'] ?? 'view';
 }
 
@@ -58,6 +60,28 @@ class FileRef {
         size = (j['size'] ?? 0) as int;
   bool get isImage => mime.startsWith('image/');
   bool get isText => mime.startsWith('text/') || mime == 'application/json';
+}
+
+/// Tệp gửi ra bên ngoài đang chờ (hoặc đã được) duyệt.
+class Approval {
+  final String id, conversationId, conversationName, organization, senderId, senderName, caption, status, reason;
+  final String? decidedByName;
+  final FileRef file;
+  final int createdAt;
+  Approval.fromJson(Map<String, dynamic> j)
+      : id = j['id'],
+        conversationId = j['conversation_id'],
+        conversationName = j['conversation_name'] ?? '',
+        organization = j['organization'] ?? '',
+        senderId = j['sender_id'],
+        senderName = j['sender_name'] ?? '',
+        caption = j['caption'] ?? '',
+        status = j['status'],
+        reason = j['reason'] ?? '',
+        decidedByName = j['decided_by_name'],
+        file = FileRef.fromJson(j['file']),
+        createdAt = j['created_at'];
+  bool get isPending => status == 'pending';
 }
 
 class Message {
@@ -193,12 +217,28 @@ class Api {
   Future<Message> sendText(String convId, String text, String clientId) async => Message.fromJson(
       (await _send('POST', '/api/conversations/$convId/messages', body: {'text': text, 'client_id': clientId}))['message']);
 
-  Future<Message> sendFile(String convId, String name, String mime, Uint8List bytes, String clientId) async {
+  /// Trả về tin nhắn đã gửi, hoặc yêu cầu duyệt nếu tệp phải chờ trước khi ra ngoài.
+  Future<(Message?, Approval?)> sendFile(String convId, String name, String mime, Uint8List bytes, String clientId) async {
     final uri = Uri.parse('$base/api/conversations/$convId/files').replace(queryParameters: {'client_id': clientId});
     final res = await _http
         .post(uri, headers: _headers({'content-type': mime, 'x-file-name': Uri.encodeComponent(name)}), body: bytes)
         .timeout(const Duration(minutes: 5));
-    return Message.fromJson(_decode(res)['message']);
+    final d = _decode(res);
+    if (d['pending'] != null) return (null, Approval.fromJson(d['pending']));
+    return (Message.fromJson(d['message']), null);
+  }
+
+  Future<List<Approval>> pending(String convId) async =>
+      ((await _send('GET', '/api/conversations/$convId/pending'))['approvals'] as List).map((e) => Approval.fromJson(e)).toList();
+  Future<List<Approval>> approvals() async =>
+      ((await _send('GET', '/api/approvals'))['approvals'] as List).map((e) => Approval.fromJson(e)).toList();
+  Future<void> approve(String id) => _send('POST', '/api/approvals/$id/approve');
+  Future<void> reject(String id, String reason) => _send('POST', '/api/approvals/$id/reject', body: {'reason': reason});
+  Future<void> cancelApproval(String id) => _send('POST', '/api/approvals/$id/cancel');
+  Future<Uint8List> approvalFile(String id) async {
+    final res = await _http.get(Uri.parse('$base/api/approvals/$id/file'), headers: _headers()).timeout(const Duration(minutes: 5));
+    if (res.statusCode >= 400) _decode(res);
+    return res.bodyBytes;
   }
 
   Future<List<Map<String, dynamic>>> conversationMembers(String convId) async =>

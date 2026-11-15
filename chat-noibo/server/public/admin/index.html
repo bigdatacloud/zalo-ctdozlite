@@ -25,6 +25,7 @@ button:hover{background:var(--hover)}
 button.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-ink)}
 button.danger{color:var(--danger)}
 button.small{padding:3px 8px;font-size:12px}
+a.btn{border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:inherit;text-decoration:none}
 header{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:2}
 header h1{font-size:16px;margin:0;flex:1}
 nav{display:flex;gap:4px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--border);overflow-x:auto}
@@ -72,7 +73,7 @@ const API = location.origin;
 let TOKEN = null;
 try { TOKEN = sessionStorage.getItem("adm_token"); } catch {}
 let ME = null;
-const state = { tab: "users", users: [], groups: [], devices: [], settings: {}, audit: [], userKind: "all", q: "" };
+const state = { tab: "approvals", approvals: [], apStatus: "pending", users: [], groups: [], devices: [], settings: {}, audit: [], userKind: "all", q: "" };
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -129,22 +130,88 @@ function renderLogin(msg) {
 }
 
 // ------------------------------------------------------------------ Khung chính
-const TABS = [["users", "Tài khoản"], ["groups", "Nhóm"], ["devices", "Thiết bị"], ["settings", "Chính sách"], ["audit", "Nhật ký"]];
+const TABS = [["approvals", "Duyệt tệp"], ["users", "Tài khoản"], ["groups", "Nhóm"], ["devices", "Thiết bị"], ["settings", "Chính sách"], ["audit", "Nhật ký"]];
 function shell() {
   $("#app").innerHTML = `
   <header><h1>Quản trị Chat Nội Bộ</h1><span class="muted small">${esc(ME.display_name)}</span>
     <button class="small" id="lo">Đăng xuất</button></header>
-  <nav id="tabs">${TABS.map(([k, v]) => `<button data-t="${k}">${v}</button>`).join("")}</nav>
+  <nav id="tabs">${TABS.map(([k, v]) => `<button data-t="${k}">${v}${k === "approvals" ? ` <span class="chip warn" id="apc" hidden></span>` : ""}</button>`).join("")}</nav>
   <main id="main"></main>`;
   $("#lo").onclick = async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => {}); logout(); };
-  $("#tabs").onclick = (e) => { const t = e.target.dataset.t; if (t) { state.tab = t; render(); } };
-  render();
+  $("#tabs").onclick = (e) => { const t = e.target.closest("button")?.dataset.t; if (t) { state.tab = t; render(); } };
+  render(); refreshApprovalCount(); setInterval(refreshApprovalCount, 30000);
 }
 async function render() {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === state.tab));
   const m = $("#main"); m.innerHTML = `<div class="empty">Đang tải…</div>`;
-  try { await ({ users: renderUsers, groups: renderGroups, devices: renderDevices, settings: renderSettings, audit: renderAudit })[state.tab](m); }
+  try { await ({ approvals: renderApprovals, users: renderUsers, groups: renderGroups, devices: renderDevices, settings: renderSettings, audit: renderAudit })[state.tab](m); }
   catch (e) { m.innerHTML = `<div class="empty err">${esc(e.message)}</div>`; }
+}
+
+// ------------------------------------------------------------------ Duyệt tệp
+const AP_ST = { pending: ["warn", "Chờ duyệt"], approved: ["ok", "Đã duyệt"], rejected: ["bad", "Từ chối"], cancelled: ["", "Đã rút"] };
+async function refreshApprovalCount() {
+  try {
+    const n = (await api("/api/approvals?status=pending")).approvals.length;
+    const el = $("#apc"); if (el) { el.hidden = !n; el.textContent = n; }
+  } catch {}
+}
+async function fetchApprovalFile(a) {
+  const r = await fetch(`${API}/api/approvals/${a.id}/file`, { headers: { authorization: "Bearer " + TOKEN } });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || "Không mở được tệp");
+  return r.blob();
+}
+async function previewApproval(a) {
+  const blob = await fetchApprovalFile(a);
+  const url = URL.createObjectURL(blob);
+  let body;
+  if (a.file.mime.startsWith("image/")) body = `<img src="${url}" style="max-width:100%;max-height:60vh;display:block;margin:auto">`;
+  else if (a.file.mime.startsWith("text/") || a.file.mime === "application/json") body = `<pre style="max-height:60vh;overflow:auto;white-space:pre-wrap;margin:0">${esc(await blob.text())}</pre>`;
+  else if (a.file.mime === "application/pdf") body = `<iframe src="${url}" style="width:100%;height:60vh;border:0"></iframe>`;
+  else body = `<div class="muted">Không xem trước được loại tệp này trong trình duyệt. Tải về để kiểm tra.</div>`;
+  openDialog(`<h2>${esc(a.file.name)}</h2>
+    <div class="muted small">${esc(a.sender_name)} → ${esc(a.organization)} · ${fmtSize(a.file.size)} · SHA-256 ${esc(a.file.sha256.slice(0, 16))}…</div>
+    ${a.caption ? `<div>${esc(a.caption)}</div>` : ""}${body}
+    <div class="actions"><a class="btn" href="${url}" download="${esc(a.file.name)}">Tải về</a><button class="primary">Đóng</button></div>`, () => {});
+  $("#dlg").addEventListener("close", () => URL.revokeObjectURL(url), { once: true });
+}
+function fmtSize(b) { return b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
+async function renderApprovals(m) {
+  state.approvals = (await api(`/api/approvals?status=${state.apStatus}&limit=200`)).approvals;
+  m.innerHTML = `<div class="bar">
+    <select id="aps"><option value="pending">Đang chờ duyệt</option><option value="all">Tất cả (lịch sử)</option></select>
+    <span class="grow"></span><button id="apr">Làm mới</button></div>
+    <div class="card"><table><thead><tr><th>Gửi lúc</th><th>Người gửi</th><th>Gửi tới</th><th>Tệp</th><th>Trạng thái</th><th></th></tr></thead><tbody id="apt"></tbody></table></div>
+    <p class="muted small">Tệp nhân viên gửi vào nhóm có người bên ngoài nằm ở đây cho tới khi được duyệt. Đối tác không thấy tệp chờ duyệt hay bị từ chối. Trưởng bộ phận được giao quyền duyệt cũng xử lý được ngay trong ứng dụng.</p>`;
+  $("#aps").value = state.apStatus;
+  $("#aps").onchange = (e) => { state.apStatus = e.target.value; render(); };
+  $("#apr").onclick = () => render();
+  $("#apt").innerHTML = state.approvals.length ? state.approvals.map((a) => `<tr>
+    <td class="small" style="white-space:nowrap">${fmtDate(a.created_at)}</td>
+    <td>${esc(a.sender_name)} <span class="muted small">${esc(a.sender_username)}</span></td>
+    <td><span class="chip ext">${esc(a.organization)}</span><div class="muted small">${esc(a.conversation_name)}</div></td>
+    <td><a href="#" data-pv="${a.id}">${esc(a.file.name)}</a><div class="muted small">${fmtSize(a.file.size)}${a.caption ? " · " + esc(a.caption) : ""}</div></td>
+    <td><span class="chip ${AP_ST[a.status][0]}">${AP_ST[a.status][1]}</span>
+      ${a.decided_by_name ? `<div class="muted small">${esc(a.decided_by_name)} · ${fmtDate(a.decided_at)}</div>` : ""}
+      ${a.reason ? `<div class="small">${esc(a.reason)}</div>` : ""}</td>
+    <td style="white-space:nowrap">${a.status === "pending" ? `<button class="small" data-pv="${a.id}">Xem</button>
+      <button class="small danger" data-rj="${a.id}">Từ chối</button> <button class="small primary" data-ok="${a.id}">Duyệt</button>` : ""}</td>
+  </tr>`).join("") : `<tr><td colspan="6" class="empty">${state.apStatus === "pending" ? "Không có tệp nào chờ duyệt" : "Chưa có dữ liệu"}</td></tr>`;
+  $("#apt").onclick = async (e) => {
+    const t = e.target, find = (id) => state.approvals.find((a) => a.id === id);
+    try {
+      if (t.dataset.pv) { e.preventDefault(); await previewApproval(find(t.dataset.pv)); }
+      if (t.dataset.ok) {
+        const a = find(t.dataset.ok);
+        if (!confirm(`Duyệt gửi "${a.file.name}" tới ${a.organization}?`)) return;
+        await api(`/api/approvals/${a.id}/approve`, { method: "POST" }); toast("Đã duyệt, tệp đã gửi tới đối tác"); render(); refreshApprovalCount();
+      }
+      if (t.dataset.rj) {
+        const reason = prompt("Lý do từ chối (người gửi sẽ thấy):"); if (!reason) return;
+        await api(`/api/approvals/${t.dataset.rj}/reject`, { method: "POST", body: { reason } }); toast("Đã từ chối"); render(); refreshApprovalCount();
+      }
+    } catch (err) { toast(err.message, true); }
+  };
 }
 
 // ------------------------------------------------------------------ Tài khoản
@@ -310,7 +377,8 @@ async function renderGroups(m) {
         <td>${groupType(g)}</td>
         <td>${g.member_count}</td>
         <td>${FLAGS.map(([k, v]) => `<label class="toggle"><input type="checkbox" data-g="${g.id}" data-f="${k}" ${g[k] ? "checked" : ""}>${v}</label>`).join("")}
-          ${!g.external ? `<label class="toggle"><input type="checkbox" data-g="${g.id}" data-f="managed" ${g.managed ? "checked" : ""}>Nhóm công ty</label>` : ""}</td>
+          ${!g.external ? `<label class="toggle"><input type="checkbox" data-g="${g.id}" data-f="managed" ${g.managed ? "checked" : ""}>Nhóm công ty</label>`
+            : `<label class="toggle" title="Tệp nhân viên gửi ra phải được duyệt"><input type="checkbox" data-g="${g.id}" data-f="require_approval" ${g.require_approval ? "checked" : ""}><b>Duyệt tệp gửi ra</b></label>`}</td>
         <td class="small muted">${fmtDate(g.last_msg_at)}</td>
         <td><button class="small" data-m="${g.id}">Thành viên</button></td>
       </tr>`).join("") : `<tr><td colspan="6" class="empty">Chưa có nhóm</td></tr>`;
@@ -344,6 +412,7 @@ function groupDialog() {
       <label>Loại nhóm<select name="type" id="gtp"><option value="internal">Nội bộ công ty</option><option value="external">Có người bên ngoài</option></select></label>
       <label id="orgl" hidden>Đơn vị bên ngoài<select name="organization" id="gorg">${orgs.map((o) => `<option>${esc(o)}</option>`).join("")}</select></label>
     </div>
+    <div class="muted small" id="ghint2" hidden>Sau khi tạo, vào "Thành viên" để giao quyền duyệt tệp cho trưởng bộ phận (quản trị viên luôn duyệt được).</div>
     <div class="muted small" id="ghint">Mặc định: được gửi tệp, cấm chuyển tiếp ra ngoài, cấm sao chép, cấm lưu tệp.</div>
     <input id="mq" placeholder="Lọc người">
     <div class="picker" id="pk"></div>
@@ -356,9 +425,9 @@ function groupDialog() {
     });
   const refresh = () => {
     const ext = $("#gtp", f).value === "external";
-    $("#orgl", f).hidden = !ext;
+    $("#orgl", f).hidden = !ext; $("#ghint2", f).hidden = !ext;
     $("#ghint", f).textContent = ext
-      ? "Chỉ người của đúng đơn vị đã chọn được vào. Mặc định cho gửi và lưu tệp; không ai chuyển tiếp được tin từ nơi khác vào nhóm này; mọi tệp gửi vào đều được ghi nhật ký."
+      ? "Chỉ người của đúng đơn vị đã chọn được vào. Tệp nhân viên gửi ra phải được duyệt mới tới đối tác; không ai chuyển tiếp được tin từ nơi khác vào nhóm này."
       : "Mặc định: được gửi tệp, cấm chuyển tiếp ra ngoài, cấm sao chép, cấm lưu tệp.";
     const q = $("#mq", f).value.toLowerCase();
     const picked = new Set([...f.querySelectorAll('input[name="m"]:checked')].map((x) => x.value));
@@ -383,13 +452,19 @@ async function membersDialog(g) {
     });
   const draw = () => {
     $("#cur", f).innerHTML = members.map((u) => `<label><span style="flex:1">${esc(u.display_name)} <span class="muted small">${esc(u.username)}
-      ${u.kind === "external" ? `<span class="chip ext">${esc(u.organization)}</span>` : ""}</span></span>
+      ${u.kind === "external" ? `<span class="chip ext">${esc(u.organization)}</span>` : ""}
+      ${u.role === "owner" ? `<span class="chip pri">Trưởng nhóm</span>` : u.role === "admin" ? `<span class="chip ok">Người duyệt</span>` : ""}</span></span>
+      ${g.external && u.kind === "internal" && u.role !== "owner" ? `<button type="button" class="small" data-ap="${u.id}" data-r="${u.role === "admin" ? "member" : "admin"}">${u.role === "admin" ? "Bỏ quyền duyệt" : "Giao quyền duyệt"}</button>` : ""}
       <button type="button" class="small danger" data-rm="${u.id}">Xóa</button></label>`).join("") || `<div class="empty">Trống</div>`;
     const have = new Set(members.map((x) => x.id)); const q = $("#aq", f).value.toLowerCase();
     $("#add", f).innerHTML = pickerHtml(eligible(!!g.external, g.organization).filter((u) => !have.has(u.id) && (!q || (u.display_name + u.username).toLowerCase().includes(q))));
   };
   $("#aq", f).oninput = draw;
   $("#cur", f).onclick = async (e) => {
+    const ap = e.target.dataset?.ap;
+    if (ap) { e.preventDefault();
+      try { await api(`/api/admin/conversations/${g.id}/members/${ap}`, { method: "PATCH", body: { role: e.target.dataset.r } }); members = await load(); draw(); toast("Đã cập nhật quyền duyệt"); }
+      catch (err) { toast(err.message, true); } return; }
     const id = e.target.dataset?.rm; if (!id) return; e.preventDefault();
     try { await api(`/api/admin/conversations/${g.id}/members/${id}`, { method: "DELETE" }); members = await load(); draw(); toast("Đã xóa khỏi nhóm"); }
     catch (err) { toast(err.message, true); }
@@ -445,7 +520,9 @@ const ACT = {
   admin_create_user: "Tạo tài khoản", admin_create_external_user: "Tạo tài khoản bên ngoài", admin_update_user: "Sửa tài khoản",
   admin_revoke_device: "Thu hồi thiết bị", admin_trust_device: "Đặt thiết bị công ty", admin_update_conversation: "Sửa quyền nhóm",
   admin_add_members: "Thêm thành viên (QT)", admin_remove_member: "Xóa thành viên (QT)", admin_settings: "Đổi chính sách",
-  admin_read_conversation: "Quản trị xem hội thoại", expire_sweep: "Thu hồi do hết hạn", bootstrap: "Khởi tạo hệ thống",
+  admin_read_conversation: "Quản trị xem hội thoại", expire_sweep: "Thu hồi do hết hạn", upload_pending: "Gửi tệp ra ngoài (chờ duyệt)", approve_external: "Duyệt gửi tệp ra ngoài",
+  reject_external: "Từ chối gửi tệp ra ngoài", cancel_external: "Rút lại tệp chờ duyệt", approval_preview: "Xem trước tệp chờ duyệt",
+  admin_set_approver: "Giao/bỏ quyền duyệt", bootstrap: "Khởi tạo hệ thống",
 };
 async function renderAudit(m, append) {
   if (!append) {

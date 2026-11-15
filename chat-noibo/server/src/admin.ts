@@ -200,7 +200,7 @@ export function adminRoutes(route: Route) {
   route("GET", "/api/admin/conversations", async (c) => {
     await requireAdmin(c.env, c.req);
     const r = await c.env.DB.prepare(
-      `SELECT c.id, c.kind, c.name, c.managed, c.external, c.organization, c.allow_upload, c.allow_forward_out, c.allow_copy, c.allow_save_file,
+      `SELECT c.id, c.kind, c.name, c.managed, c.external, c.organization, c.require_approval, c.allow_upload, c.allow_forward_out, c.allow_copy, c.allow_save_file,
               c.created_by, c.created_at, c.last_msg_at, (SELECT COUNT(*) FROM members m WHERE m.conversation_id = c.id) AS member_count
          FROM conversations c WHERE c.kind = 'group' ORDER BY c.last_msg_at DESC LIMIT 1000`,
     ).all();
@@ -213,7 +213,7 @@ export function adminRoutes(route: Route) {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (b.name !== undefined) (sets.push("name=?"), vals.push(str(b.name, "name", 120)));
-    for (const k of ["managed", "allow_upload", "allow_forward_out", "allow_copy", "allow_save_file"]) {
+    for (const k of ["managed", "allow_upload", "allow_forward_out", "allow_copy", "allow_save_file", "require_approval"]) {
       const v = bool01(b[k]);
       if (v !== undefined) (sets.push(`${k}=?`), vals.push(v));
     }
@@ -258,6 +258,24 @@ export function adminRoutes(route: Route) {
       .bind(p.id)
       .all();
     return json({ members: r.results });
+  });
+
+  // Đặt/bỏ quyền duyệt (phó nhóm) cho một nhân viên trong nhóm.
+  route("PATCH", "/api/admin/conversations/:id/members/:uid", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ role?: string }>(c.req);
+    const role = b.role === "admin" ? "admin" : "member";
+    if (role === "admin") {
+      const u = await c.env.DB.prepare("SELECT kind FROM users WHERE id = ?").bind(p.uid).first<{ kind: string }>();
+      if (u?.kind !== "internal") throw new HttpError(400, "bad_field", "Chỉ nhân viên công ty mới được giao quyền duyệt");
+    }
+    const r = await c.env.DB.prepare("UPDATE members SET role = ? WHERE conversation_id = ? AND user_id = ? AND role != 'owner'")
+      .bind(role, p.id, p.uid)
+      .run();
+    if (!r.meta.changes) throw new HttpError(404, "not_found", "Không tìm thấy thành viên (hoặc là trưởng nhóm)");
+    await audit(c.env, { user_id: me.user_id, action: "admin_set_approver", conversation_id: p.id, target: p.uid, allowed: true, detail: role });
+    await fanoutConv(c, p.id, { type: "conversation_changed", conversation_id: p.id });
+    return json({ ok: true });
   });
 
   route("DELETE", "/api/admin/conversations/:id/members/:uid", async (c, p) => {

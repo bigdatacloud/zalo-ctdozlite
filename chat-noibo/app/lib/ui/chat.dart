@@ -85,7 +85,8 @@ class _ChatPaneState extends State<ChatPane> {
     setState(() => _sending = true);
     try {
       final bytes = await f.readAsBytes();
-      await s.sendFile(widget.convId, f.name, _mimeOf(f.name), bytes);
+      final waiting = await s.sendFile(widget.convId, f.name, _mimeOf(f.name), bytes);
+      if (waiting && mounted) toast(context, 'Đã gửi "${f.name}" đi duyệt. Đối tác chỉ nhận được sau khi được duyệt.');
     } catch (e) {
       if (mounted) toast(context, '$e', error: true);
     } finally {
@@ -156,6 +157,7 @@ class _ChatPaneState extends State<ChatPane> {
           ),
         ),
       ),
+      if (s.pendingFor(c.id).isNotEmpty) _PendingTray(conv: c, items: s.pendingFor(c.id)),
       Divider(height: 1, color: p.border),
       _Composer(
         controller: _text,
@@ -185,6 +187,8 @@ class _Header extends StatelessWidget {
         _chip(context, Icons.verified_user, 'Nhóm công ty', p.primary),
       _chip(context, pol.canUpload ? Icons.attach_file : Icons.block, pol.canUpload ? 'Được gửi tệp' : 'Cấm gửi tệp',
           pol.canUpload ? p.online : p.textMuted),
+      if (pol.needsApproval) _chip(context, Icons.fact_check_outlined, 'Gửi tệp cần duyệt', p.warning),
+      if (pol.canApprove) _chip(context, Icons.verified_outlined, 'Bạn duyệt tệp nhóm này', p.online),
       if (!pol.canForwardOut) _chip(context, Icons.forward_to_inbox, 'Cấm chuyển tiếp', p.warning),
       if (!pol.canCopy) _chip(context, Icons.content_copy, 'Cấm sao chép', p.warning),
     ];
@@ -254,7 +258,7 @@ class _Composer extends StatelessWidget {
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
         Tooltip(
           message: canUpload
-              ? 'Gửi tệp hoặc ảnh'
+              ? (conv.policy.needsApproval ? 'Gửi tệp: cần người duyệt đồng ý trước khi đối tác nhận được' : 'Gửi tệp hoặc ảnh')
               : conv.isGroup
                   ? 'Chỉ nhóm do công ty quản lý mới được gửi tệp'
                   : 'Không được gửi tệp trong tin nhắn cá nhân',
@@ -586,4 +590,115 @@ String _mimeOf(String name) {
         'dwg': 'application/acad',
       }[ext] ??
       'application/octet-stream';
+}
+
+/// Khay tệp chờ duyệt phía trên ô soạn tin.
+class _PendingTray extends StatelessWidget {
+  final Conversation conv;
+  final List<Approval> items;
+  const _PendingTray({required this.conv, required this.items});
+
+  Future<void> _run(BuildContext context, Future<void> Function() f, String ok) async {
+    try {
+      await f();
+      if (context.mounted) toast(context, ok);
+    } catch (e) {
+      if (context.mounted) toast(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _preview(BuildContext context, Approval a) async {
+    final s = AppScope.read(context);
+    try {
+      final bytes = await s.api.approvalFile(a.id);
+      if (!context.mounted) return;
+      if (a.file.isImage) {
+        openImageViewer(context, a.file, bytes, conv.policy);
+      } else if (a.file.isText) {
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(a.file.name),
+            content: SizedBox(width: 640, height: 420, child: SingleChildScrollView(child: Text(utf8.decode(bytes, allowMalformed: true)))),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng'))],
+          ),
+        );
+      } else {
+        toast(context, 'Bản hiện tại xem trước được ảnh và văn bản. Tệp ${a.file.name} (${fmtSize(a.file.size)}) cần xem trên trang quản trị.');
+      }
+    } catch (e) {
+      if (context.mounted) toast(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _reject(BuildContext context, Approval a) async {
+    final s = AppScope.read(context);
+    final ctl = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Từ chối gửi tệp'),
+        content: SizedBox(
+          width: 380,
+          child: TextField(controller: ctl, autofocus: true, decoration: const InputDecoration(labelText: 'Lý do (người gửi sẽ thấy)')),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctl.text.trim()), child: const Text('Từ chối')),
+        ],
+      ),
+    );
+    if (reason == null || reason.isEmpty || !context.mounted) return;
+    await _run(context, () => s.reject(a, reason), 'Đã từ chối');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScope.of(context);
+    final p = context.pal;
+    final me = s.me!.userId;
+    return Container(
+      color: p.warning.withValues(alpha: 0.08),
+      constraints: const BoxConstraints(maxHeight: 220),
+      child: ListView(shrinkWrap: true, padding: const EdgeInsets.symmetric(vertical: 4), children: [
+        for (final a in items)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(children: [
+              Icon(
+                a.status == 'rejected' ? Icons.block : Icons.hourglass_top,
+                size: 18,
+                color: a.status == 'rejected' ? p.danger : p.warning,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text.rich(
+                  TextSpan(children: [
+                    if (a.senderId != me) TextSpan(text: '${a.senderName} muốn gửi ', style: TextStyle(color: p.textSecondary)),
+                    TextSpan(text: a.file.name, style: TextStyle(fontWeight: FontWeight.w600, color: p.textPrimary)),
+                    TextSpan(text: ' · ${fmtSize(a.file.size)} · ', style: TextStyle(color: p.textMuted)),
+                    if (a.status == 'rejected')
+                      TextSpan(text: 'Bị từ chối${a.decidedByName != null ? ' bởi ${a.decidedByName}' : ''}: ${a.reason}', style: TextStyle(color: p.danger))
+                    else
+                      TextSpan(text: a.senderId == me ? 'Đang chờ duyệt, đối tác chưa nhận' : 'Chờ bạn duyệt', style: TextStyle(color: p.warning)),
+                  ]),
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              if (a.isPending && conv.policy.canApprove && a.senderId != me) ...[
+                TextButton(onPressed: () => _preview(context, a), child: const Text('Xem')),
+                TextButton(onPressed: () => _reject(context, a), style: TextButton.styleFrom(foregroundColor: p.danger), child: const Text('Từ chối')),
+                FilledButton(
+                  onPressed: () => _run(context, () => s.approve(a), 'Đã duyệt, tệp đã gửi tới ${conv.organization}'),
+                  child: const Text('Duyệt'),
+                ),
+              ] else if (a.isPending && a.senderId == me)
+                TextButton(onPressed: () => _run(context, () => s.cancelApproval(a), 'Đã rút lại'), child: const Text('Rút lại'))
+              else if (a.status == 'rejected')
+                IconButton(tooltip: 'Ẩn', onPressed: () => s.dismissApproval(a.id), icon: const Icon(Icons.close, size: 18)),
+            ]),
+          ),
+      ]),
+    );
+  }
 }

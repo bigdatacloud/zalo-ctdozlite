@@ -12,6 +12,7 @@ export interface ConvPolicyRow {
   allow_save_file: number;
   external: number;
   organization: string;
+  require_approval?: number;
 }
 
 export type FileAccess = "allow" | "view" | "deny";
@@ -91,6 +92,18 @@ export function defaultsFor(kind: "dm" | "group", managed: boolean, external = f
   if (managed) return { allow_upload: 1, allow_forward_out: 0, allow_copy: 0, allow_save_file: 0 };
   if (kind === "dm") return { allow_upload: 0, allow_forward_out: 1, allow_copy: 1, allow_save_file: 0 };
   return { allow_upload: 0, allow_forward_out: 1, allow_copy: 1, allow_save_file: 0 };
+}
+
+/** Người có quyền duyệt tệp gửi ra ngoài trong một nhóm: quản trị viên hệ thống, hoặc
+ *  nhân viên được IT đặt làm trưởng/phó nhóm. */
+export function isApprover(who: Principal, memberRole: string | null | undefined): boolean {
+  if (who.kind !== "internal") return false;
+  return who.role === "admin" || memberRole === "owner" || memberRole === "admin";
+}
+
+/** Tệp gửi vào nhóm có người bên ngoài phải chờ duyệt? */
+export function needsApproval(conv: ConvPolicyRow, who: Principal, memberRole: string | null | undefined): boolean {
+  return !!conv.external && !!conv.require_approval && who.kind === "internal" && !isApprover(who, memberRole);
 }
 
 /** Người bên ngoài chỉ hoạt động trong nhóm được công ty mở cho họ. */

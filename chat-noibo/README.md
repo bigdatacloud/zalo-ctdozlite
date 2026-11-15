@@ -47,7 +47,8 @@ Công ty tạo tài khoản cho đối tác ở trang quản trị (loại "Bên
 | Nhân viên nhắn riêng cho người bên ngoài | **Cấm**: mọi trao đổi với đối tác đi qua nhóm, có người phụ trách và nhật ký |
 | Đưa người bên ngoài vào nhóm nội bộ | **Cấm** |
 | Một nhóm bên ngoài chứa người của hai đơn vị khác nhau | **Cấm**: NCC A không bao giờ thấy NCC B |
-| Gửi tệp trực tiếp vào nhóm bên ngoài (đơn hàng, bản vẽ) | Được, ghi nhật ký riêng "Gửi tệp ra bên ngoài" kèm tên đơn vị và mã băm tệp |
+| Nhân viên gửi tệp vào nhóm bên ngoài (đơn hàng, bản vẽ) | **Phải được duyệt** (xem dưới). Người duyệt tự gửi thì đi thẳng, vẫn ghi nhật ký |
+| Đối tác gửi tệp vào nhóm (báo giá, hóa đơn) | Được, không cần duyệt |
 | Chuyển tiếp tin từ bất kỳ đâu **vào** nhóm bên ngoài | **Cấm**: muốn đưa gì ra ngoài phải chủ động gửi, có dấu vết |
 | Chuyển tiếp báo giá/tài liệu của đối tác **vào** nhóm công ty | Được |
 | Người bên ngoài chuyển tiếp tin | **Cấm** |
@@ -56,9 +57,19 @@ Công ty tạo tài khoản cho đối tác ở trang quản trị (loại "Bên
 
 Khách hàng không chịu dùng ứng dụng thì làm việc qua email như anh đã quyết, hệ thống này không cần làm gì thêm cho trường hợp đó.
 
+### Duyệt tệp gửi ra bên ngoài
+
+1. Nhân viên gửi tệp vào nhóm có người bên ngoài. Tệp **chưa thành tin nhắn**: đối tác không thấy dòng nào, không mở được tệp, không nhận sự kiện gì.
+2. Người gửi thấy "Đang chờ duyệt, đối tác chưa nhận" ngay dưới khung chat và có thể **rút lại**.
+3. Người duyệt thấy số tệp chờ trên danh sách hội thoại và khay **Xem / Từ chối / Duyệt** trong nhóm. Quản trị viên còn có mục **Duyệt tệp** trên trang quản trị (xem trước ảnh, văn bản, PDF).
+4. Được duyệt: tệp hiện trong nhóm, đứng tên người gửi ban đầu. Bị từ chối: người gửi thấy lý do; đối tác vẫn không biết gì.
+
+Người duyệt gồm quản trị viên hệ thống và nhân viên được IT **giao quyền duyệt** trong từng nhóm (trang quản trị → Nhóm → Thành viên). Có thể tắt yêu cầu duyệt riêng cho từng nhóm (ô "Duyệt tệp gửi ra"). Hai người bấm duyệt cùng lúc thì chỉ một lần có hiệu lực. Tệp bị từ chối vẫn được giữ trên R2 làm bằng chứng.
+
 ## Trang quản trị
 
 `https://<tên-miền>/admin/`, đăng nhập bằng tài khoản quản trị viên. Các mục:
+- **Duyệt tệp**: tệp chờ duyệt toàn công ty, lịch sử duyệt/từ chối.
 - **Tài khoản**: tạo nhân viên hoặc đối tác, nhập hàng loạt từ Excel (dán cột mã, họ tên, phòng ban; tải về CSV mật khẩu ban đầu), đặt lại mật khẩu, khóa, gia hạn.
 - **Nhóm**: tạo nhóm công ty hoặc nhóm bên ngoài, bật/tắt từng quyền (gửi tệp, chuyển tiếp ra, sao chép, lưu tệp), thêm/xóa thành viên. Danh sách chọn người chỉ hiện những người được phép vào nhóm đó.
 - **Thiết bị**: xem ai đăng nhập ở đâu, đánh dấu điện thoại công ty cấp, thu hồi thiết bị.

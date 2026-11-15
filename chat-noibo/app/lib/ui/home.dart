@@ -264,6 +264,21 @@ class _ConvTile extends StatelessWidget {
                             color: unread > 0 ? p.textPrimary : p.textMuted,
                             fontWeight: unread > 0 ? FontWeight.w600 : FontWeight.normal)),
                   ),
+                  if (AppScope.of(context).approvalsWaiting(conv.id) > 0)
+                    Tooltip(
+                      message: 'Tệp chờ bạn duyệt',
+                      child: Container(
+                        margin: const EdgeInsets.only(left: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(color: p.warning, borderRadius: BorderRadius.circular(10)),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.fact_check_outlined, size: 11, color: Colors.white),
+                          const SizedBox(width: 2),
+                          Text('${AppScope.of(context).approvalsWaiting(conv.id)}',
+                              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                        ]),
+                      ),
+                    ),
                   if (unread > 0)
                     Container(
                       margin: const EdgeInsets.only(left: 6),

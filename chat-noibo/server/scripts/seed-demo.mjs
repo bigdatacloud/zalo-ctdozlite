@@ -27,4 +27,8 @@ const binh = (await api("/api/auth/login", { username: "nv002", password: "matkh
 const dm = (await api("/api/conversations/dm", { user_id: ids.nv002 }, an)).conversation.id;
 await api(`/api/conversations/${dm}/messages`, { text: "Chị Bình ơi, chiều nay ca 2 có tăng ca không ạ?" }, an);
 await api(`/api/conversations/${dm}/messages`, { text: "Có em nhé, đến 20h." }, binh);
-console.log("Xong. Đăng nhập thử: nv001 / matkhau123 (mật khẩu admin: admin-doi-ngay)");
+// Nhà cung cấp + nhóm bên ngoài, chị Bình được giao quyền duyệt tệp gửi ra
+const ncc = (await api("/api/admin/users", { username: "ncc-abc-01", display_name: "Hoàng Minh Tuấn", kind: "external", organization: "Công ty Gỗ ABC", password: "ncc-matkhau" }, admin)).user_id;
+const ext = (await api("/api/admin/groups", { name: "Mua hàng - Gỗ ABC", external: true, organization: "Công ty Gỗ ABC", member_ids: [ids.nv001, ids.nv002, ncc] }, admin)).conversation_id;
+await api(`/api/admin/conversations/${ext}/members/${ids.nv002}`, { role: "admin" }, admin, "PATCH");
+console.log("Xong. Đăng nhập thử: nv001 / matkhau123 (mật khẩu admin: admin-doi-ngay, NCC: ncc-abc-01 / ncc-matkhau)");

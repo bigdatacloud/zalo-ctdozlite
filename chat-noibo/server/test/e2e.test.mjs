@@ -337,6 +337,8 @@ test("nhóm bên ngoài: gửi tệp trực tiếp được (có nhật ký), ch
     headers: { "content-type": "text/plain", "x-file-name": encodeURIComponent("Đơn đặt hàng PO-001.txt") },
     raw: "PO-001: 200 tấm gỗ",
   });
+  assert.equal(r.status, 202, "nhân viên thường gửi ra ngoài phải chờ duyệt");
+  r = await api(`/api/approvals/${r.data.pending.id}/approve`, { token: ctx.admin, method: "POST" });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   const po = r.data.message;
   r = await api(`/api/files/${po.file.id}?purpose=save`, { token: ctx.ncc });
@@ -359,7 +361,7 @@ test("nhóm bên ngoài: gửi tệp trực tiếp được (có nhật ký), ch
   r = await api(`/api/messages/${quote.id}/forward`, { token: ctx.ncc, method: "POST", body: { conversation_id: ctx.ext } });
   assert.equal(r.status, 403);
 
-  r = await api("/api/admin/audit?action=upload_external", { token: ctx.admin });
+  r = await api("/api/admin/audit?action=approve_external", { token: ctx.admin });
   assert.ok(r.data.audit.some((a) => a.detail.includes("Công ty Gỗ ABC")));
 });
 
@@ -369,4 +371,94 @@ test("tài khoản bên ngoài hết hạn thì mất truy cập ngay", async ()
   r = await api("/api/me", { token: ctx.ncc });
   assert.equal(r.status, 401);
   assert.equal(r.data.error, "account_expired");
+});
+
+test("duyệt tệp gửi ra ngoài: đối tác không thấy gì cho tới khi được duyệt", async () => {
+  let r = await api("/api/admin/users", { token: ctx.admin, method: "POST", body: { username: "ncc05", display_name: "Đại diện DEF", kind: "external", organization: "Công ty Bao bì DEF", password: "matkhau123" } });
+  const ncc05 = r.data.user_id;
+  r = await api("/api/auth/login", { method: "POST", body: { username: "ncc05", password: "matkhau123", platform: "windows" } });
+  const ncc = r.data.token;
+  r = await api("/api/admin/groups", { token: ctx.admin, method: "POST", body: { name: "Mua hàng - Bao bì DEF", external: true, organization: "Công ty Bao bì DEF", member_ids: [ctx.nv001_id, ctx.nv002_id, ncc05] } });
+  const g = r.data.conversation_id;
+  // Giao quyền duyệt cho chị Bình
+  r = await api(`/api/admin/conversations/${g}/members/${ctx.nv002_id}`, { token: ctx.admin, method: "PATCH", body: { role: "admin" } });
+  assert.equal(r.status, 200);
+  r = await api(`/api/admin/conversations/${g}/members/${ncc05}`, { token: ctx.admin, method: "PATCH", body: { role: "admin" } });
+  assert.equal(r.status, 400, "không giao quyền duyệt cho người bên ngoài");
+
+  r = await api(`/api/conversations/${g}`, { token: ctx.an });
+  assert.equal(r.data.conversation.policy.needs_approval, true);
+  assert.equal(r.data.conversation.policy.can_approve, false);
+  r = await api(`/api/conversations/${g}`, { token: ctx.binh });
+  assert.equal(r.data.conversation.policy.needs_approval, false);
+  assert.equal(r.data.conversation.policy.can_approve, true);
+
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/ws?token=${ncc}`);
+  const nccEvents = [];
+  await new Promise((res) => { ws.onmessage = (e) => { const m = JSON.parse(e.data); nccEvents.push(m); if (m.type === "hello") res(); }; });
+
+  const upload = (text) => api(`/api/conversations/${g}/files`, {
+    token: ctx.an, method: "POST", headers: { "content-type": "text/plain", "x-file-name": encodeURIComponent(text + ".txt") }, raw: text,
+  });
+  r = await upload("Bản vẽ khay B12");
+  assert.equal(r.status, 202);
+  const p1 = r.data.pending;
+  assert.equal(p1.status, "pending");
+
+  // Đối tác: không có tin, không mở được tệp, không xem trước được
+  r = await api(`/api/conversations/${g}/messages`, { token: ncc });
+  assert.ok(!r.data.messages.some((m) => m.file), "đối tác không thấy tệp chờ duyệt");
+  assert.equal((await api(`/api/files/${p1.file.id}`, { token: ncc })).status, 404);
+  assert.equal((await api(`/api/approvals/${p1.id}/file`, { token: ncc })).status, 403);
+  assert.equal((await api(`/api/conversations/${g}/pending`, { token: ncc })).data.approvals.length, 0);
+
+  // Người gửi thấy tệp của mình đang chờ; không tự duyệt được
+  r = await api(`/api/conversations/${g}/pending`, { token: ctx.an });
+  assert.equal(r.data.approvals.length, 1);
+  assert.equal((await api(`/api/approvals/${p1.id}/approve`, { token: ctx.an, method: "POST" })).status, 403);
+
+  // Người duyệt thấy trong danh sách của mình và xem trước được
+  r = await api("/api/approvals", { token: ctx.binh });
+  assert.ok(r.data.approvals.some((a) => a.id === p1.id));
+  r = await api(`/api/approvals/${p1.id}/file`, { token: ctx.binh });
+  assert.equal(new TextDecoder().decode(r.data), "Bản vẽ khay B12");
+
+  assert.equal((await api(`/api/approvals/${p1.id}/reject`, { token: ctx.binh, method: "POST", body: {} })).status, 400, "từ chối phải có lý do");
+  r = await api(`/api/approvals/${p1.id}/approve`, { token: ctx.binh, method: "POST" });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.message.sender_id, ctx.nv001_id, "tin đứng tên người gửi ban đầu");
+  assert.equal((await api(`/api/approvals/${p1.id}/approve`, { token: ctx.admin, method: "POST" })).status, 409, "không duyệt hai lần");
+  r = await api(`/api/files/${p1.file.id}?purpose=save`, { token: ncc });
+  assert.equal(r.status, 200, "sau khi duyệt đối tác tải được");
+
+  // Từ chối
+  r = await upload("Bảng giá vốn nội bộ");
+  const p2 = r.data.pending;
+  r = await api(`/api/approvals/${p2.id}/reject`, { token: ctx.admin, method: "POST", body: { reason: "Tài liệu nội bộ, không gửi NCC" } });
+  assert.equal(r.status, 200);
+  r = await api(`/api/conversations/${g}/pending`, { token: ctx.an });
+  const rej = r.data.approvals.find((a) => a.id === p2.id);
+  assert.equal(rej.status, "rejected");
+  assert.equal(rej.reason, "Tài liệu nội bộ, không gửi NCC");
+  assert.equal((await api(`/api/files/${p2.file.id}`, { token: ncc })).status, 404);
+
+  // Rút lại
+  r = await upload("Gửi nhầm");
+  assert.equal((await api(`/api/approvals/${r.data.pending.id}/cancel`, { token: ctx.an, method: "POST" })).status, 200);
+
+  // Người duyệt tự gửi thì đi thẳng
+  r = await api(`/api/conversations/${g}/files`, { token: ctx.binh, method: "POST", headers: { "content-type": "text/plain", "x-file-name": "po.txt" }, raw: "PO-002" });
+  assert.equal(r.status, 200);
+  // Đối tác gửi vào thì không cần duyệt
+  r = await api(`/api/conversations/${g}/files`, { token: ncc, method: "POST", headers: { "content-type": "text/plain", "x-file-name": "bao-gia.txt" }, raw: "Báo giá" });
+  assert.equal(r.status, 200);
+
+  await new Promise((res) => setTimeout(res, 300));
+  ws.close();
+  const leaked = nccEvents.filter((e) => e.type === "approval_changed" || (e.type === "message" && /khay|giá vốn|nhầm/i.test(e.message.file?.name ?? "") && e.message.file?.name !== "Bản vẽ khay B12.txt"));
+  assert.deepEqual(leaked, [], "đối tác không nhận sự kiện nào về tệp chờ duyệt / bị từ chối");
+
+  r = await api("/api/admin/audit?limit=300", { token: ctx.admin });
+  const acts = r.data.audit.map((a) => a.action);
+  for (const a of ["upload_pending", "approve_external", "reject_external", "cancel_external", "approval_preview"]) assert.ok(acts.includes(a), a);
 });

@@ -1,14 +1,15 @@
 import { authenticate, createSession, hashPassword, Principal, validatePassword, verifyPassword } from "./auth";
-import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, requireInternal } from "./policy";
+import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, isApprover, needsApproval, requireInternal } from "./policy";
+import { approvalRoutes, notifyApprovers, pendingOut } from "./approvals";
 import { adminRoutes, sweepExpired } from "./admin";
 import { audit, Env, getSettings, HttpError, json, newId, now, readJson, sha256Hex, str } from "./util";
 
 export { UserHub } from "./hub";
 
-type Ctx = { env: Env; req: Request; url: URL; exec: ExecutionContext };
-type Handler = (c: Ctx, p: Record<string, string>) => Promise<Response>;
+export type Ctx = { env: Env; req: Request; url: URL; exec: ExecutionContext };
+export type Handler = (c: Ctx, p: Record<string, string>) => Promise<Response>;
 
-interface ConvRow extends ConvPolicyRow {
+export interface ConvRow extends ConvPolicyRow {
   name: string;
   created_by: string;
   created_at: number;
@@ -150,7 +151,7 @@ async function loadMsg(env: Env, id: string): Promise<MsgRow | null> {
 }
 
 /** Chèn tin nhắn với số thứ tự tăng dần trong hội thoại (một câu lệnh, nguyên tử trong D1). */
-async function insertMessage(
+export async function insertMessage(
   c: Ctx,
   convId: string,
   senderId: string,
@@ -205,7 +206,12 @@ async function convOut(env: Env, conv: ConvRow, who: Principal, settings: Record
     last_read_seq: conv.last_read_seq,
     unread: Math.max(0, conv.last_seq - conv.last_read_seq),
     last_msg_at: conv.last_msg_at,
-    policy: clientFlags(conv, who, settings),
+    require_approval: !!conv.require_approval,
+    policy: {
+      ...clientFlags(conv, who, settings),
+      needs_approval: needsApproval(conv, who, conv.member_role),
+      can_approve: !!conv.external && isApprover(who, conv.member_role),
+    },
   };
 }
 
@@ -392,9 +398,9 @@ export async function createGroup(
   const t = now();
   const stmts = [
     c.env.DB.prepare(
-      `INSERT INTO conversations(id,kind,name,managed,allow_upload,allow_forward_out,allow_copy,allow_save_file,created_by,created_at,last_msg_at,external,organization)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(id, "group", name, managed ? 1 : 0, d.allow_upload, d.allow_forward_out, d.allow_copy, d.allow_save_file, me.user_id, t, t, convShape.external, convShape.organization),
+      `INSERT INTO conversations(id,kind,name,managed,allow_upload,allow_forward_out,allow_copy,allow_save_file,created_by,created_at,last_msg_at,external,organization,require_approval)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(id, "group", name, managed ? 1 : 0, d.allow_upload, d.allow_forward_out, d.allow_copy, d.allow_save_file, me.user_id, t, t, convShape.external, convShape.organization, convShape.external),
     ...valid.results.map((u) =>
       c.env.DB.prepare("INSERT INTO members(conversation_id,user_id,role,joined_at) VALUES (?,?,?,?)").bind(
         id,
@@ -500,10 +506,23 @@ route("POST", "/api/conversations/:id/files", async (c, p) => {
   )
     .bind(fileId, conv.id, me.user_id, key, name, mime, body.byteLength, sha, now())
     .run();
+  const caption = c.url.searchParams.get("caption")?.slice(0, 2000) ?? "";
+  if (needsApproval(conv, me, conv.member_role)) {
+    // Chưa phải tin nhắn: đối tác không thấy, không mở được tệp cho tới khi được duyệt.
+    const aid = newId("a");
+    await c.env.DB.prepare("INSERT INTO approvals(id,conversation_id,sender_id,file_id,caption,created_at) VALUES (?,?,?,?,?,?)")
+      .bind(aid, conv.id, me.user_id, fileId, caption, now())
+      .run();
+    await audit(c.env, { user_id: me.user_id, device_id: me.device_id, action: "upload_pending", conversation_id: conv.id, target: aid, allowed: true, detail: `${name} (${body.byteLength} B, sha256 ${sha}) → chờ duyệt gửi ra: ${conv.organization}` });
+    const pending = await pendingOut(c.env, aid);
+    // Báo cả các thiết bị khác của chính người gửi.
+    await notifyApprovers(c, conv.id, { type: "approval_changed", conversation_id: conv.id, approval: pending }, [me.user_id]);
+    return json({ pending }, 202);
+  }
   await audit(c.env, { user_id: me.user_id, device_id: me.device_id, action: conv.external ? "upload_external" : "upload", conversation_id: conv.id, target: fileId, allowed: true, detail: `${name} (${body.byteLength} B, sha256 ${sha})${conv.external ? ` → bên ngoài: ${conv.organization}` : ""}` });
   const message = await insertMessage(c, conv.id, me.user_id, {
     kind: mime.startsWith("image/") ? "image" : "file",
-    text: c.url.searchParams.get("caption")?.slice(0, 2000) ?? "",
+    text: caption,
     file_id: fileId,
     client_id: c.url.searchParams.get("client_id")?.slice(0, 64) ?? null,
   });
@@ -641,6 +660,7 @@ route("GET", "/api/files/:id", async (c, p) => {
 });
 
 adminRoutes(route);
+approvalRoutes(route);
 
 export async function assertCanJoin(env: Env, conv: { external: number; organization: string }, ids: string[]) {
   if (!ids.length) return;
