@@ -25,6 +25,15 @@ class_name = "UserHub"
 tag = "v1"
 new_sqlite_classes = ["UserHub"]
 
+# Mỗi 15 phút: thu hồi phiên của tài khoản (thường là tài khoản bên ngoài) đã hết hạn.
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Trang quản trị tĩnh: https://<tên-miền>/admin/
+[assets]
+directory = "./public"
+not_found_handling = "none"
+
 [vars]
 # Origin được phép gọi API từ trình duyệt (chỉ dùng cho bản web thử nghiệm). Ứng dụng native không cần CORS.
 CORS_ORIGIN = "*"

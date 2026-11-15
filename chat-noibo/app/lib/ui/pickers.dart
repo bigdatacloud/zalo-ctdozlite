@@ -125,6 +125,7 @@ Future<Conversation?> pickForwardTarget(BuildContext context, {required Conversa
   final hasFile = message.file != null;
   final targets = s.conversations.where((c) {
     if (c.id == source.id) return false;
+    if (c.external) return false; // không bao giờ chuyển tiếp vào nhóm có người bên ngoài
     if (source.managed && !c.managed) return false;
     if (hasFile && !c.policy.canUpload) return false;
     return true;
@@ -189,7 +190,10 @@ Future<void> showMembers(BuildContext context, Conversation conv) async {
                 ListTile(
                   leading: Avatar(name: m['display_name'] ?? '', size: 34),
                   title: Text(m['display_name'] ?? ''),
-                  subtitle: Text([m['department'] ?? '', if (m['role'] != 'member') m['role'] == 'owner' ? 'Trưởng nhóm' : 'Phó nhóm']
+                  subtitle: Text([
+                    if (m['kind'] == 'external') 'Bên ngoài · ${m['organization']}' else m['department'] ?? '',
+                    if (m['role'] != 'member') m['role'] == 'owner' ? 'Trưởng nhóm' : 'Phó nhóm'
+                  ]
                       .where((x) => x.isNotEmpty)
                       .join(' · ')),
                 ),

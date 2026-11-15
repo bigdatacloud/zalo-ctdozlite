@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 /// Atom One Dark ở chế độ tối.
 class Palette extends ThemeExtension<Palette> {
   final Color sidebar, canvas, hover, selected, input, border;
-  final Color textPrimary, textSecondary, textMuted, primary, danger, warning, online;
+  final Color textPrimary, textSecondary, textMuted, primary, danger, warning, online, external;
   final Color bubbleOut, bubbleOutText, bubbleIn, bubbleInText, bubbleInBorder, meta;
   const Palette({
     required this.sidebar,
@@ -20,6 +20,7 @@ class Palette extends ThemeExtension<Palette> {
     required this.danger,
     required this.warning,
     required this.online,
+    required this.external,
     required this.bubbleOut,
     required this.bubbleOutText,
     required this.bubbleIn,
@@ -42,6 +43,7 @@ class Palette extends ThemeExtension<Palette> {
     danger: Color(0xFFDC2626),
     warning: Color(0xFFB45309),
     online: Color(0xFF16A34A),
+    external: Color(0xFF9333EA),
     bubbleOut: Color(0xFFDBEBFF),
     bubbleOutText: Color(0xFF0F172A),
     bubbleIn: Color(0xFFFFFFFF),
@@ -64,6 +66,7 @@ class Palette extends ThemeExtension<Palette> {
     danger: Color(0xFFE06C75),
     warning: Color(0xFFE5C07B),
     online: Color(0xFF98C379),
+    external: Color(0xFFC678DD),
     bubbleOut: Color(0xFF25374D),
     bubbleOutText: Color(0xFFEBF0F6),
     bubbleIn: Color(0xFF323842),

@@ -10,6 +10,8 @@ export interface ConvPolicyRow {
   allow_forward_out: number;
   allow_copy: number;
   allow_save_file: number;
+  external: number;
+  organization: string;
 }
 
 export type FileAccess = "allow" | "view" | "deny";
@@ -46,8 +48,13 @@ export function canForward(
   settings: Record<string, string>,
 ): Decision {
   if (src.id === dst.id) return deny("Không thể chuyển tiếp vào chính hội thoại này");
+  // Nhóm có người bên ngoài là điểm dữ liệu rời công ty: chỉ được gửi trực tiếp vào đó
+  // (có ghi nhật ký), không bao giờ được chuyển tiếp từ nơi khác vào — kể cả từ nhóm
+  // của một đơn vị bên ngoài khác (tránh lộ báo giá NCC này cho NCC kia).
+  if (dst.external) return deny("Không được chuyển tiếp vào nhóm có người bên ngoài");
   if (!src.allow_forward_out) return deny("Hội thoại nguồn không cho phép chuyển tiếp tin nhắn");
-  if (src.managed && !dst.managed) return deny("Tin từ nhóm công ty chỉ được chuyển sang nhóm công ty");
+  if (src.managed && !src.external && !dst.managed) return deny("Tin từ nhóm công ty chỉ được chuyển sang nhóm công ty");
+  if (src.external && !dst.managed) return deny("Tin từ nhóm có người bên ngoài chỉ được chuyển sang nhóm công ty");
   if (hasFile) {
     const up = canUpload(dst, settings);
     if (!up.ok) return deny(`Không thể chuyển tiếp tệp: ${up.reason.toLowerCase()}`);
@@ -57,6 +64,8 @@ export function canForward(
 
 /** Mức truy cập tệp theo thiết bị. */
 export function fileAccess(conv: ConvPolicyRow, who: Principal, settings: Record<string, string>): FileAccess {
+  // Nhóm có người bên ngoài: tệp gửi vào đó vốn để đưa cho đối tác, áp dụng đúng cờ của nhóm.
+  if (conv.external) return conv.allow_save_file ? "allow" : "view";
   const mobile = who.platform === "android" || who.platform === "ios";
   if (mobile && !who.trusted) {
     const m = settings.mobile_untrusted_files;
@@ -70,15 +79,35 @@ export function fileAccess(conv: ConvPolicyRow, who: Principal, settings: Record
 export function clientFlags(conv: ConvPolicyRow, who: Principal, settings: Record<string, string>) {
   return {
     can_upload: canUpload(conv, settings).ok,
-    can_forward_out: !!conv.allow_forward_out,
+    can_forward_out: !!conv.allow_forward_out && who.kind === "internal",
     can_copy: !!conv.allow_copy,
     file_access: fileAccess(conv, who, settings),
   };
 }
 
 /** Mặc định chính sách cho hội thoại mới. */
-export function defaultsFor(kind: "dm" | "group", managed: boolean) {
+export function defaultsFor(kind: "dm" | "group", managed: boolean, external = false) {
+  if (external) return { allow_upload: 1, allow_forward_out: 1, allow_copy: 1, allow_save_file: 1 };
   if (managed) return { allow_upload: 1, allow_forward_out: 0, allow_copy: 0, allow_save_file: 0 };
   if (kind === "dm") return { allow_upload: 0, allow_forward_out: 1, allow_copy: 1, allow_save_file: 0 };
   return { allow_upload: 0, allow_forward_out: 1, allow_copy: 1, allow_save_file: 0 };
+}
+
+/** Người bên ngoài chỉ hoạt động trong nhóm được công ty mở cho họ. */
+export function requireInternal(who: Principal, what: string) {
+  if (who.kind !== "internal") return deny(`Tài khoản bên ngoài không được ${what}`);
+  return ALLOW;
+}
+
+/** Ai được đưa vào một nhóm. */
+export function canJoin(
+  conv: { external: number; organization: string },
+  user: { kind: string; organization: string },
+): Decision {
+  if (user.kind === "external") {
+    if (!conv.external) return deny("Không được thêm người bên ngoài vào nhóm nội bộ");
+    if (user.organization !== conv.organization)
+      return deny(`Nhóm này chỉ dành cho đơn vị "${conv.organization}"`);
+  }
+  return ALLOW;
 }

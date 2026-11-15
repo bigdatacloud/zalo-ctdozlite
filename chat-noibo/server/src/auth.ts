@@ -13,6 +13,8 @@ export interface Principal {
   platform: string;
   trusted: boolean;
   must_change_password: boolean;
+  kind: "internal" | "external";
+  organization: string;
 }
 
 export async function hashPassword(password: string, saltB64?: string) {
@@ -67,7 +69,7 @@ export async function authenticate(env: Env, req: Request): Promise<Principal> {
   if (!token) throw new HttpError(401, "unauthenticated", "Chưa đăng nhập");
   const row = await env.DB.prepare(
     `SELECT s.user_id, s.device_id, s.expires_at, u.username, u.display_name, u.role, u.status,
-            u.must_change_password, d.platform, d.trusted, d.revoked_at
+            u.must_change_password, u.kind, u.organization, u.expires_at AS expires_at_user, d.platform, d.trusted, d.revoked_at
        FROM sessions s JOIN users u ON u.id = s.user_id JOIN devices d ON d.id = s.device_id
       WHERE s.token_hash = ?`,
   )
@@ -81,12 +83,16 @@ export async function authenticate(env: Env, req: Request): Promise<Principal> {
       role: "admin" | "member";
       status: string;
       must_change_password: number;
+      kind: "internal" | "external";
+      organization: string;
+      expires_at_user: number | null;
       platform: string;
       trusted: number;
       revoked_at: number | null;
     }>();
   if (!row || row.expires_at < now()) throw new HttpError(401, "session_expired", "Phiên đăng nhập đã hết hạn");
   if (row.status !== "active") throw new HttpError(401, "account_disabled", "Tài khoản đã bị khóa");
+  if (row.expires_at_user && row.expires_at_user < now()) throw new HttpError(401, "account_expired", "Tài khoản đã hết hạn sử dụng");
   if (row.revoked_at) throw new HttpError(401, "device_revoked", "Thiết bị đã bị thu hồi quyền truy cập");
   return {
     user_id: row.user_id,
@@ -97,5 +103,7 @@ export async function authenticate(env: Env, req: Request): Promise<Principal> {
     platform: row.platform,
     trusted: row.trusted === 1,
     must_change_password: row.must_change_password === 1,
+    kind: row.kind,
+    organization: row.organization,
   };
 }

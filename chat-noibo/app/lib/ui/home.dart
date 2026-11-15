@@ -130,11 +130,14 @@ class _SidebarState extends State<_Sidebar> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(s.me!.displayName,
                     maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.w600, color: p.textPrimary)),
-                Text(s.online ? s.me!.username : 'Đang kết nối lại…',
+                Text(s.online ? (s.me!.isExternal ? '${s.me!.username} · ${s.me!.organization}' : s.me!.username) : 'Đang kết nối lại…',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 12, color: s.online ? p.textMuted : p.warning)),
               ]),
             ),
-            IconButton(tooltip: 'Tin nhắn mới', onPressed: _newChat, icon: const Icon(Icons.edit_square)),
+            if (!s.me!.isExternal)
+              IconButton(tooltip: 'Tin nhắn mới', onPressed: _newChat, icon: const Icon(Icons.edit_square)),
             PopupMenuButton<String>(
               tooltip: 'Tùy chọn',
               onSelected: (v) async {
@@ -142,10 +145,11 @@ class _SidebarState extends State<_Sidebar> {
                 if (v == 'password') changePasswordDialog(context);
                 if (v == 'logout') AppScope.read(context).logout();
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'group', child: ListTile(leading: Icon(Icons.group_add_outlined), title: Text('Tạo nhóm'))),
-                PopupMenuItem(value: 'password', child: ListTile(leading: Icon(Icons.key_outlined), title: Text('Đổi mật khẩu'))),
-                PopupMenuItem(value: 'logout', child: ListTile(leading: Icon(Icons.logout), title: Text('Đăng xuất'))),
+              itemBuilder: (_) => [
+                if (!s.me!.isExternal)
+                  const PopupMenuItem(value: 'group', child: ListTile(leading: Icon(Icons.group_add_outlined), title: Text('Tạo nhóm'))),
+                const PopupMenuItem(value: 'password', child: ListTile(leading: Icon(Icons.key_outlined), title: Text('Đổi mật khẩu'))),
+                const PopupMenuItem(value: 'logout', child: ListTile(leading: Icon(Icons.logout), title: Text('Đăng xuất'))),
               ],
             ),
           ]),
@@ -209,6 +213,7 @@ class _ConvTile extends StatelessWidget {
     if (m == null) return conv.managed ? 'Nhóm công ty quản lý' : '';
     if (m.recalled) return 'Tin nhắn đã được thu hồi';
     final who = m.senderId == meId ? 'Bạn: ' : (conv.isGroup && m.kind != 'system' ? '${m.senderName.split(' ').last}: ' : '');
+    if (m.kind == 'system') return m.text;
     if (m.kind == 'image') return '$who[Hình ảnh]';
     if (m.kind == 'file') return '$who[Tệp] ${m.file?.name ?? ''}';
     return '$who${m.text}';
@@ -231,7 +236,10 @@ class _ConvTile extends StatelessWidget {
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
-                  if (conv.managed) ...[
+                  if (conv.external) ...[
+                    Tooltip(message: 'Có người bên ngoài: ${conv.organization}', child: Icon(Icons.public, size: 15, color: p.external)),
+                    const SizedBox(width: 4),
+                  ] else if (conv.managed) ...[
                     Tooltip(message: 'Nhóm công ty quản lý', child: Icon(Icons.verified_user, size: 15, color: p.primary)),
                     const SizedBox(width: 4),
                   ],

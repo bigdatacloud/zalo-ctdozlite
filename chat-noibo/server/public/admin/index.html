@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quản trị Chat Nội Bộ</title>
+<style>
+:root{
+  --bg:#f1f5f9;--panel:#fff;--text:#0f172a;--muted:#64748b;--border:#e2e8f0;--primary:#0068ff;--primary-ink:#fff;
+  --danger:#dc2626;--warn:#b45309;--ok:#16a34a;--hover:#f8fafc;--chip:#eef2ff;--ext:#9333ea;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#1d1f23;--panel:#282c34;--text:#d7dae0;--muted:#8e96a5;--border:#3e4451;--primary:#528bff;--primary-ink:#fff;
+  --danger:#e06c75;--warn:#e5c07b;--ok:#98c379;--hover:#323842;--chip:#2c313a;--ext:#c678dd;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#1d1f23;--panel:#282c34;--text:#d7dae0;--muted:#8e96a5;--border:#3e4451;--primary:#528bff;
+  --danger:#e06c75;--warn:#e5c07b;--ok:#98c379;--hover:#323842;--chip:#2c313a;--ext:#c678dd;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+input,select,textarea{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;width:100%}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--primary);outline-offset:-1px}
+button{border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:7px 12px;cursor:pointer}
+button:hover{background:var(--hover)}
+button.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-ink)}
+button.danger{color:var(--danger)}
+button.small{padding:3px 8px;font-size:12px}
+header{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:2}
+header h1{font-size:16px;margin:0;flex:1}
+nav{display:flex;gap:4px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--border);overflow-x:auto}
+nav button{border:none;background:none;border-radius:6px;white-space:nowrap}
+nav button.on{background:var(--chip);color:var(--primary);font-weight:600}
+main{padding:16px;max-width:1280px;margin:0 auto}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.bar input,.bar select{width:auto;min-width:160px;flex:0 1 240px}
+.bar .grow{flex:1}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:auto}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600;background:var(--panel);position:sticky;top:0}
+tr:hover td{background:var(--hover)}
+.muted{color:var(--muted)}.small{font-size:12px}
+.chip{display:inline-block;padding:1px 7px;border-radius:6px;font-size:12px;font-weight:600;background:var(--chip)}
+.chip.ext{color:var(--ext)}.chip.ok{color:var(--ok)}.chip.bad{color:var(--danger)}.chip.warn{color:var(--warn)}.chip.pri{color:var(--primary)}
+.login{max-width:360px;margin:12vh auto;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px;display:grid;gap:12px}
+dialog{border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text);padding:0;width:min(560px,calc(100vw - 32px))}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+dialog form{display:grid;gap:10px;padding:20px}
+dialog h2{margin:0 0 4px;font-size:17px}
+dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:600px){.row2{grid-template-columns:1fr}}
+.picker{max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+.picker label{display:flex;gap:8px;align-items:center;padding:6px 10px;color:var(--text);font-size:14px;border-bottom:1px solid var(--border)}
+.picker input{width:auto}
+.toggle{display:inline-flex;gap:4px;align-items:center;font-size:12px;color:var(--text);margin-right:8px;white-space:nowrap}
+.toggle input{width:auto}
+.secret{font-family:ui-monospace,Consolas,monospace;background:var(--chip);padding:10px;border-radius:8px;user-select:all;word-break:break-all}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--panel);padding:10px 16px;border-radius:8px;display:none;max-width:calc(100vw - 32px);z-index:10}
+.err{color:var(--danger)}
+.empty{padding:28px;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<dialog id="dlg"><form method="dialog" id="dlgForm"></form></dialog>
+<script>
+"use strict";
+const API = location.origin;
+let TOKEN = null;
+try { TOKEN = sessionStorage.getItem("adm_token"); } catch {}
+let ME = null;
+const state = { tab: "users", users: [], groups: [], devices: [], settings: {}, audit: [], userKind: "all", q: "" };
+
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function toast(msg, err) {
+  const t = $("#toast"); t.textContent = msg; t.style.background = err ? "var(--danger)" : ""; t.style.display = "block";
+  clearTimeout(toast.h); toast.h = setTimeout(() => (t.style.display = "none"), 3500);
+}
+async function api(path, opt = {}) {
+  const r = await fetch(API + path, {
+    method: opt.method || "GET",
+    headers: { "content-type": "application/json", ...(TOKEN ? { authorization: "Bearer " + TOKEN } : {}) },
+    body: opt.body ? JSON.stringify(opt.body) : undefined,
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401) { logout(d.message); throw new Error(d.message || "Hết phiên"); }
+  if (!r.ok) throw new Error(d.message || "Lỗi " + r.status);
+  return d;
+}
+const fmtDate = (ms) => (ms ? new Date(ms).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }) : "");
+const fmtDay = (ms) => (ms ? new Date(ms).toLocaleDateString("vi-VN") : "");
+function genPassword() {
+  const a = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"; const b = new Uint32Array(12);
+  crypto.getRandomValues(b); return [...b].map((x) => a[x % a.length]).join("");
+}
+function logout(msg) {
+  TOKEN = null; ME = null; try { sessionStorage.removeItem("adm_token"); } catch {}
+  renderLogin(msg);
+}
+
+// ------------------------------------------------------------------ Đăng nhập
+function renderLogin(msg) {
+  $("#app").innerHTML = `
+  <form class="login" id="lf">
+    <h2 style="margin:0">Quản trị Chat Nội Bộ</h2>
+    <div class="muted small">Chỉ tài khoản quản trị viên đăng nhập được.</div>
+    ${msg ? `<div class="err">${esc(msg)}</div>` : ""}
+    <label>Mã nhân viên<input name="u" autocomplete="username" required></label>
+    <label>Mật khẩu<input name="p" type="password" autocomplete="current-password" required></label>
+    <button class="primary">Đăng nhập</button>
+  </form>`;
+  $("#lf").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      const r = await fetch(API + "/api/auth/login", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: f.get("u"), password: f.get("p"), platform: "web", device_name: "Trang quản trị" }) });
+      const d = await r.json();
+      if (!r.ok) return renderLogin(d.message);
+      if (d.me.role !== "admin") { TOKEN = d.token; await api("/api/auth/logout", { method: "POST" }).catch(() => {}); return renderLogin("Tài khoản này không có quyền quản trị"); }
+      TOKEN = d.token; ME = d.me; try { sessionStorage.setItem("adm_token", TOKEN); } catch {}
+      shell();
+    } catch { renderLogin("Không kết nối được máy chủ"); }
+  };
+}
+
+// ------------------------------------------------------------------ Khung chính
+const TABS = [["users", "Tài khoản"], ["groups", "Nhóm"], ["devices", "Thiết bị"], ["settings", "Chính sách"], ["audit", "Nhật ký"]];
+function shell() {
+  $("#app").innerHTML = `
+  <header><h1>Quản trị Chat Nội Bộ</h1><span class="muted small">${esc(ME.display_name)}</span>
+    <button class="small" id="lo">Đăng xuất</button></header>
+  <nav id="tabs">${TABS.map(([k, v]) => `<button data-t="${k}">${v}</button>`).join("")}</nav>
+  <main id="main"></main>`;
+  $("#lo").onclick = async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => {}); logout(); };
+  $("#tabs").onclick = (e) => { const t = e.target.dataset.t; if (t) { state.tab = t; render(); } };
+  render();
+}
+async function render() {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === state.tab));
+  const m = $("#main"); m.innerHTML = `<div class="empty">Đang tải…</div>`;
+  try { await ({ users: renderUsers, groups: renderGroups, devices: renderDevices, settings: renderSettings, audit: renderAudit })[state.tab](m); }
+  catch (e) { m.innerHTML = `<div class="empty err">${esc(e.message)}</div>`; }
+}
+
+// ------------------------------------------------------------------ Tài khoản
+async function loadUsers() { state.users = (await api("/api/admin/users")).users; return state.users; }
+function userStatus(u) {
+  if (u.status === "disabled") return `<span class="chip bad">Đã khóa</span>`;
+  if (u.expires_at && u.expires_at < Date.now()) return `<span class="chip bad">Hết hạn</span>`;
+  return `<span class="chip ok">Hoạt động</span>`;
+}
+async function renderUsers(m) {
+  await loadUsers();
+  const draw = () => {
+    const q = state.q.toLowerCase();
+    const list = state.users.filter((u) => (state.userKind === "all" || u.kind === state.userKind) &&
+      (!q || [u.username, u.display_name, u.department, u.organization].join(" ").toLowerCase().includes(q)));
+    $("#ut").innerHTML = list.length ? list.map((u) => `
+      <tr>
+        <td><b>${esc(u.username)}</b>${u.role === "admin" ? ` <span class="chip pri">Quản trị</span>` : ""}</td>
+        <td>${esc(u.display_name)}${u.email ? `<div class="muted small">${esc(u.email)}</div>` : ""}</td>
+        <td>${u.kind === "external" ? `<span class="chip ext">Bên ngoài</span> ${esc(u.organization)}` : esc(u.department)}</td>
+        <td>${userStatus(u)}${u.must_change_password ? `<div class="muted small">Chưa đổi mật khẩu</div>` : ""}</td>
+        <td class="small">${u.expires_at ? fmtDay(u.expires_at) : `<span class="muted">Không</span>`}
+          ${u.kind === "external" && u.sponsor_name ? `<div class="muted">Phụ trách: ${esc(u.sponsor_name)}</div>` : ""}</td>
+        <td class="small muted">${fmtDate(u.last_seen)}</td>
+        <td style="white-space:nowrap">
+          <button class="small" data-a="pw" data-id="${u.id}">Đặt lại mật khẩu</button>
+          ${u.kind === "external" ? `<button class="small" data-a="exp" data-id="${u.id}">Gia hạn</button>` : ""}
+          <button class="small ${u.status === "active" ? "danger" : ""}" data-a="st" data-id="${u.id}">${u.status === "active" ? "Khóa" : "Mở khóa"}</button>
+        </td>
+      </tr>`).join("") : `<tr><td colspan="7" class="empty">Không có tài khoản phù hợp</td></tr>`;
+  };
+  m.innerHTML = `
+  <div class="bar">
+    <select id="uk"><option value="all">Tất cả</option><option value="internal">Nhân viên</option><option value="external">Bên ngoài (NCC, khách hàng)</option></select>
+    <input id="uq" placeholder="Tìm mã, tên, phòng ban, đơn vị" value="${esc(state.q)}">
+    <span class="grow"></span>
+    <button id="bulk">Nhập hàng loạt</button>
+    <button class="primary" id="nu">+ Tạo tài khoản</button>
+  </div>
+  <div class="card"><table><thead><tr><th>Mã</th><th>Tên</th><th>Phòng ban / Đơn vị</th><th>Trạng thái</th><th>Hết hạn</th><th>Hoạt động gần nhất</th><th></th></tr></thead><tbody id="ut"></tbody></table></div>`;
+  $("#uk").value = state.userKind;
+  $("#uk").onchange = (e) => { state.userKind = e.target.value; draw(); };
+  $("#uq").oninput = (e) => { state.q = e.target.value; draw(); };
+  $("#nu").onclick = () => userDialog();
+  $("#bulk").onclick = bulkDialog;
+  $("#ut").onclick = async (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    const u = state.users.find((x) => x.id === b.dataset.id);
+    if (b.dataset.a === "pw") {
+      if (!confirm(`Đặt lại mật khẩu cho ${u.display_name}? Mọi thiết bị đang đăng nhập sẽ bị đăng xuất.`)) return;
+      const pw = genPassword();
+      await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { password: pw } });
+      showSecret(`Mật khẩu mới của ${u.display_name}`, u.username, pw);
+    }
+    if (b.dataset.a === "st") {
+      const to = u.status === "active" ? "disabled" : "active";
+      if (to === "disabled" && !confirm(`Khóa ${u.display_name}? Mọi thiết bị sẽ bị đăng xuất và xóa dữ liệu chat.`)) return;
+      await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { status: to } });
+      toast(to === "disabled" ? "Đã khóa tài khoản" : "Đã mở khóa"); render();
+    }
+    if (b.dataset.a === "exp") {
+      const v = prompt("Hạn sử dụng mới (YYYY-MM-DD), để trống = không hết hạn", u.expires_at ? new Date(u.expires_at).toISOString().slice(0, 10) : "");
+      if (v === null) return;
+      await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { expires_at: v.trim() } });
+      toast("Đã cập nhật hạn sử dụng"); render();
+    }
+  };
+  draw();
+}
+function openDialog(html, onSubmit) {
+  const d = $("#dlg"), f = $("#dlgForm");
+  f.innerHTML = html;
+  f.onsubmit = async (e) => {
+    if (e.submitter && e.submitter.value === "cancel") return;
+    e.preventDefault();
+    const btn = e.submitter; if (btn) btn.disabled = true;
+    try { if ((await onSubmit(new FormData(f), f)) !== false) d.close(); }
+    catch (err) { toast(err.message, true); }
+    finally { if (btn) btn.disabled = false; }
+  };
+  d.showModal();
+  return f;
+}
+function showSecret(title, username, pw) {
+  openDialog(`<h2>${esc(title)}</h2>
+    <div class="muted small">Chỉ hiển thị một lần. Gửi cho người dùng qua kênh an toàn (trực tiếp, email công ty). Họ sẽ được nhắc đổi mật khẩu khi đăng nhập.</div>
+    <div class="secret">Mã đăng nhập: ${esc(username)}<br>Mật khẩu: ${esc(pw)}</div>
+    <div class="actions"><button type="button" id="cp">Sao chép</button><button class="primary">Xong</button></div>`, () => {});
+  $("#cp").onclick = () => navigator.clipboard?.writeText(`Mã đăng nhập: ${username}\nMật khẩu: ${pw}`).then(() => toast("Đã sao chép"));
+}
+function userDialog() {
+  const pw = genPassword();
+  const f = openDialog(`<h2>Tạo tài khoản</h2>
+    <label>Loại tài khoản<select name="kind" id="kk"><option value="internal">Nhân viên công ty</option><option value="external">Bên ngoài (nhà cung cấp, khách hàng)</option></select></label>
+    <div class="row2"><label>Mã đăng nhập<input name="username" required maxlength="64" placeholder="vd: nv123 hoặc ncc-abc-01"></label>
+      <label>Họ tên<input name="display_name" required maxlength="120"></label></div>
+    <label id="dep">Phòng ban / xưởng<input name="department" maxlength="120"></label>
+    <div id="extf" hidden>
+      <div class="row2"><label>Tên đơn vị (bắt buộc)<input name="organization" list="orgs" maxlength="120"></label>
+        <label>Hạn sử dụng<input name="expires_at" type="date"></label></div>
+      <datalist id="orgs">${[...new Set(state.users.filter((u) => u.kind === "external").map((u) => u.organization))].map((o) => `<option value="${esc(o)}">`).join("")}</datalist>
+      <div class="muted small">Người bên ngoài chỉ thấy các nhóm "bên ngoài" của đúng đơn vị này. Không xem được danh bạ, không nhắn riêng được.</div>
+    </div>
+    <label>Email (để gửi thông tin đăng nhập)<input name="email" type="email" maxlength="200"></label>
+    <label id="rolel">Vai trò<select name="role"><option value="member">Thành viên</option><option value="admin">Quản trị viên</option></select></label>
+    <label>Mật khẩu ban đầu<input name="password" value="${pw}" required minlength="8"></label>
+    <div class="actions"><button value="cancel" formnovalidate>Hủy</button><button class="primary">Tạo</button></div>`,
+    async (fd) => {
+      const body = Object.fromEntries(fd.entries());
+      if (body.kind === "external" && !body.organization.trim()) throw new Error("Nhập tên đơn vị bên ngoài");
+      if (body.kind !== "external") { delete body.organization; delete body.expires_at; }
+      await api("/api/admin/users", { method: "POST", body });
+      await loadUsers(); render();
+      setTimeout(() => showSecret(`Đã tạo tài khoản ${body.display_name}`, body.username, body.password), 50);
+    });
+  $("#kk", f).onchange = (e) => {
+    const ext = e.target.value === "external";
+    $("#extf", f).hidden = !ext; $("#dep", f).hidden = ext; $("#rolel", f).hidden = ext;
+  };
+}
+function bulkDialog() {
+  openDialog(`<h2>Nhập nhân viên hàng loạt</h2>
+    <div class="muted small">Mỗi dòng: <b>mã,họ tên,phòng ban</b>. Có thể dán trực tiếp từ Excel (cột cách nhau bằng tab). Mật khẩu ngẫu nhiên được tạo cho từng người, tải về dạng CSV sau khi xong.</div>
+    <textarea name="rows" rows="10" placeholder="nv101,Nguyễn Văn A,Xưởng 1&#10;nv102,Trần Thị B,Kho"></textarea>
+    <div class="actions"><button value="cancel" formnovalidate>Hủy</button><button class="primary">Nhập</button></div>`,
+    async (fd) => {
+      const rows = String(fd.get("rows")).split(/\r?\n/).map((l) => l.split(/\t|,/).map((x) => x.trim())).filter((r) => r[0] && r[1]);
+      if (!rows.length) throw new Error("Chưa có dòng hợp lệ");
+      const out = [["ma", "ho_ten", "phong_ban", "mat_khau", "ket_qua"]];
+      for (const [username, display_name, department = ""] of rows) {
+        const password = genPassword();
+        try { await api("/api/admin/users", { method: "POST", body: { username, display_name, department, password } }); out.push([username, display_name, department, password, "OK"]); }
+        catch (e) { out.push([username, display_name, department, "", e.message]); }
+      }
+      const csv = "﻿" + out.map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")).join("\n");
+      const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+      a.download = "tai-khoan-moi.csv"; a.click();
+      toast(`Đã xử lý ${rows.length} dòng, xem kết quả trong tệp CSV`); render();
+    });
+}
+
+// ------------------------------------------------------------------ Nhóm
+const FLAGS = [["allow_upload", "Gửi tệp"], ["allow_forward_out", "Chuyển tiếp ra"], ["allow_copy", "Sao chép"], ["allow_save_file", "Lưu tệp"]];
+function groupType(g) {
+  if (g.external) return `<span class="chip ext">Bên ngoài</span> ${esc(g.organization)}`;
+  if (g.managed) return `<span class="chip pri">Nhóm công ty</span>`;
+  return `<span class="chip">Nhóm thường</span>`;
+}
+async function renderGroups(m) {
+  state.groups = (await api("/api/admin/conversations")).conversations;
+  if (!state.users.length) await loadUsers();
+  m.innerHTML = `
+  <div class="bar"><input id="gq" placeholder="Tìm nhóm"><span class="grow"></span>
+    <button class="primary" id="ng">+ Tạo nhóm</button></div>
+  <div class="card"><table><thead><tr><th>Tên nhóm</th><th>Loại</th><th>Thành viên</th><th>Quyền trong nhóm</th><th>Tin gần nhất</th><th></th></tr></thead><tbody id="gt"></tbody></table></div>
+  <p class="muted small">Nhóm thường do nhân viên tự tạo luôn bị cấm gửi tệp, kể cả khi bật ô "Gửi tệp". Muốn cho gửi tệp, hãy chuyển thành nhóm công ty.</p>`;
+  const draw = () => {
+    const q = $("#gq").value.toLowerCase();
+    const list = state.groups.filter((g) => !q || (g.name + " " + g.organization).toLowerCase().includes(q));
+    $("#gt").innerHTML = list.length ? list.map((g) => `
+      <tr>
+        <td><b>${esc(g.name)}</b></td>
+        <td>${groupType(g)}</td>
+        <td>${g.member_count}</td>
+        <td>${FLAGS.map(([k, v]) => `<label class="toggle"><input type="checkbox" data-g="${g.id}" data-f="${k}" ${g[k] ? "checked" : ""}>${v}</label>`).join("")}
+          ${!g.external ? `<label class="toggle"><input type="checkbox" data-g="${g.id}" data-f="managed" ${g.managed ? "checked" : ""}>Nhóm công ty</label>` : ""}</td>
+        <td class="small muted">${fmtDate(g.last_msg_at)}</td>
+        <td><button class="small" data-m="${g.id}">Thành viên</button></td>
+      </tr>`).join("") : `<tr><td colspan="6" class="empty">Chưa có nhóm</td></tr>`;
+  };
+  $("#gq").oninput = draw;
+  $("#ng").onclick = groupDialog;
+  $("#gt").onchange = async (e) => {
+    const c = e.target; if (!c.dataset.g) return;
+    try {
+      await api(`/api/admin/conversations/${c.dataset.g}`, { method: "PATCH", body: { [c.dataset.f]: c.checked } });
+      const g = state.groups.find((x) => x.id === c.dataset.g); g[c.dataset.f] = c.checked ? 1 : 0;
+      toast("Đã lưu"); draw();
+    } catch (err) { c.checked = !c.checked; toast(err.message, true); }
+  };
+  $("#gt").onclick = (e) => { const id = e.target.dataset?.m; if (id) membersDialog(state.groups.find((g) => g.id === id)); };
+  draw();
+}
+function eligible(external, org) {
+  return state.users.filter((u) => u.status === "active" && (u.kind === "internal" || (external && u.organization === org)));
+}
+function pickerHtml(users, picked = new Set()) {
+  return users.map((u) => `<label><input type="checkbox" name="m" value="${u.id}" ${picked.has(u.id) ? "checked" : ""}>
+    <span>${esc(u.display_name)} <span class="muted small">${esc(u.username)} · ${u.kind === "external" ? `<span class="chip ext">${esc(u.organization)}</span>` : esc(u.department)}</span></span></label>`).join("")
+    || `<div class="empty">Không có ai</div>`;
+}
+function groupDialog() {
+  const orgs = [...new Set(state.users.filter((u) => u.kind === "external").map((u) => u.organization))].sort();
+  const f = openDialog(`<h2>Tạo nhóm do công ty quản lý</h2>
+    <label>Tên nhóm<input name="name" required maxlength="120"></label>
+    <div class="row2">
+      <label>Loại nhóm<select name="type" id="gtp"><option value="internal">Nội bộ công ty</option><option value="external">Có người bên ngoài</option></select></label>
+      <label id="orgl" hidden>Đơn vị bên ngoài<select name="organization" id="gorg">${orgs.map((o) => `<option>${esc(o)}</option>`).join("")}</select></label>
+    </div>
+    <div class="muted small" id="ghint">Mặc định: được gửi tệp, cấm chuyển tiếp ra ngoài, cấm sao chép, cấm lưu tệp.</div>
+    <input id="mq" placeholder="Lọc người">
+    <div class="picker" id="pk"></div>
+    <div class="actions"><button value="cancel" formnovalidate>Hủy</button><button class="primary">Tạo nhóm</button></div>`,
+    async (fd) => {
+      const ext = fd.get("type") === "external";
+      if (ext && !fd.get("organization")) throw new Error("Chưa có đơn vị bên ngoài nào. Hãy tạo tài khoản bên ngoài trước.");
+      await api("/api/admin/groups", { method: "POST", body: { name: fd.get("name"), external: ext, organization: fd.get("organization") || "", member_ids: fd.getAll("m") } });
+      toast("Đã tạo nhóm"); render();
+    });
+  const refresh = () => {
+    const ext = $("#gtp", f).value === "external";
+    $("#orgl", f).hidden = !ext;
+    $("#ghint", f).textContent = ext
+      ? "Chỉ người của đúng đơn vị đã chọn được vào. Mặc định cho gửi và lưu tệp; không ai chuyển tiếp được tin từ nơi khác vào nhóm này; mọi tệp gửi vào đều được ghi nhật ký."
+      : "Mặc định: được gửi tệp, cấm chuyển tiếp ra ngoài, cấm sao chép, cấm lưu tệp.";
+    const q = $("#mq", f).value.toLowerCase();
+    const picked = new Set([...f.querySelectorAll('input[name="m"]:checked')].map((x) => x.value));
+    $("#pk", f).innerHTML = pickerHtml(eligible(ext, $("#gorg", f).value).filter((u) => !q || (u.display_name + u.username + u.department + u.organization).toLowerCase().includes(q)), picked);
+  };
+  $("#gtp", f).onchange = refresh; $("#gorg", f).onchange = refresh; $("#mq", f).oninput = refresh;
+  refresh();
+}
+async function membersDialog(g) {
+  const load = async () => (await api(`/api/admin/conversations/${g.id}/members`)).members;
+  let members = await load();
+  const f = openDialog(`<h2>Thành viên · ${esc(g.name)}</h2><div>${groupType(g)}</div>
+    <div class="picker" id="cur"></div>
+    <b class="small">Thêm thành viên</b>
+    <input id="aq" placeholder="Lọc người">
+    <div class="picker" id="add"></div>
+    <div class="actions"><button value="cancel" formnovalidate>Đóng</button><button class="primary">Thêm người đã chọn</button></div>`,
+    async (fd) => {
+      const ids = fd.getAll("m"); if (!ids.length) throw new Error("Chưa chọn ai");
+      await api(`/api/admin/conversations/${g.id}/members`, { method: "POST", body: { user_ids: ids } });
+      toast(`Đã thêm ${ids.length} người`); render();
+    });
+  const draw = () => {
+    $("#cur", f).innerHTML = members.map((u) => `<label><span style="flex:1">${esc(u.display_name)} <span class="muted small">${esc(u.username)}
+      ${u.kind === "external" ? `<span class="chip ext">${esc(u.organization)}</span>` : ""}</span></span>
+      <button type="button" class="small danger" data-rm="${u.id}">Xóa</button></label>`).join("") || `<div class="empty">Trống</div>`;
+    const have = new Set(members.map((x) => x.id)); const q = $("#aq", f).value.toLowerCase();
+    $("#add", f).innerHTML = pickerHtml(eligible(!!g.external, g.organization).filter((u) => !have.has(u.id) && (!q || (u.display_name + u.username).toLowerCase().includes(q))));
+  };
+  $("#aq", f).oninput = draw;
+  $("#cur", f).onclick = async (e) => {
+    const id = e.target.dataset?.rm; if (!id) return; e.preventDefault();
+    try { await api(`/api/admin/conversations/${g.id}/members/${id}`, { method: "DELETE" }); members = await load(); draw(); toast("Đã xóa khỏi nhóm"); }
+    catch (err) { toast(err.message, true); }
+  };
+  draw();
+}
+
+// ------------------------------------------------------------------ Thiết bị
+const PLAT = { windows: "Windows", android: "Android", ios: "iPhone", web: "Trình duyệt", other: "Khác" };
+async function renderDevices(m) {
+  state.devices = (await api("/api/admin/devices")).devices;
+  m.innerHTML = `<div class="bar"><input id="dq" placeholder="Tìm theo người dùng"><label class="toggle"><input type="checkbox" id="dr">Hiện cả thiết bị đã thu hồi</label></div>
+  <div class="card"><table><thead><tr><th>Người dùng</th><th>Nền tảng</th><th>Đăng nhập lúc</th><th>Hoạt động gần nhất</th><th>Thiết bị công ty</th><th></th></tr></thead><tbody id="dt"></tbody></table></div>
+  <p class="muted small">"Thiết bị công ty": điện thoại do công ty cấp được lưu tệp như máy tính. Thu hồi: đăng xuất và xóa dữ liệu chat trên thiết bị đó ngay lập tức.</p>`;
+  const draw = () => {
+    const q = $("#dq").value.toLowerCase(), showRev = $("#dr").checked;
+    const list = state.devices.filter((d) => (showRev || !d.revoked_at) && (!q || (d.display_name + d.username).toLowerCase().includes(q)));
+    $("#dt").innerHTML = list.length ? list.map((d) => `<tr>
+      <td>${esc(d.display_name)} <span class="muted small">${esc(d.username)}</span></td>
+      <td>${PLAT[d.platform] || d.platform} <span class="muted small">${esc(d.name)}</span></td>
+      <td class="small">${fmtDate(d.created_at)}</td><td class="small">${fmtDate(d.last_seen)}</td>
+      <td>${d.revoked_at ? "" : `<input type="checkbox" data-tr="${d.id}" ${d.trusted ? "checked" : ""} style="width:auto">`}</td>
+      <td>${d.revoked_at ? `<span class="chip bad">Đã thu hồi ${fmtDay(d.revoked_at)}</span>` : `<button class="small danger" data-rv="${d.id}">Thu hồi</button>`}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="empty">Không có thiết bị</td></tr>`;
+  };
+  $("#dq").oninput = draw; $("#dr").onchange = draw;
+  $("#dt").onchange = async (e) => { const id = e.target.dataset.tr; if (!id) return;
+    try { await api(`/api/admin/devices/${id}`, { method: "PATCH", body: { trusted: e.target.checked } }); toast("Đã lưu"); } catch (err) { toast(err.message, true); } };
+  $("#dt").onclick = async (e) => { const id = e.target.dataset?.rv; if (!id || !confirm("Thu hồi thiết bị này?")) return;
+    await api(`/api/admin/devices/${id}/revoke`, { method: "POST" }); toast("Đã thu hồi"); render(); };
+  draw();
+}
+
+// ------------------------------------------------------------------ Chính sách
+async function renderSettings(m) {
+  state.settings = (await api("/api/admin/settings")).settings;
+  const s = state.settings;
+  m.innerHTML = `<div class="card" style="padding:16px;display:grid;gap:14px;max-width:640px">
+    <label>Gửi tệp trong tin nhắn 1-1<select data-k="dm_upload"><option value="0">Cấm (khuyến nghị)</option><option value="1">Cho phép</option></select></label>
+    <label>Nhân viên tự tạo nhóm thường<select data-k="members_can_create_groups"><option value="1">Cho phép (nhóm thường luôn bị cấm gửi tệp)</option><option value="0">Chỉ quản trị viên tạo nhóm</option></select></label>
+    <label>Điện thoại cá nhân mở tệp trong nhóm nội bộ<select data-k="mobile_untrusted_files"><option value="view">Chỉ xem trong ứng dụng</option><option value="deny">Cấm mở</option><option value="allow">Theo quyền của nhóm</option></select></label>
+    <div class="muted small">Nhóm có người bên ngoài luôn áp dụng đúng quyền của nhóm (đối tác cần tải được đơn hàng, bản vẽ gửi cho họ).</div>
+  </div>`;
+  m.querySelectorAll("select").forEach((el) => { el.value = s[el.dataset.k];
+    el.onchange = async () => { try { await api("/api/admin/settings", { method: "PATCH", body: { [el.dataset.k]: el.value } }); toast("Đã lưu chính sách"); } catch (e) { toast(e.message, true); } }; });
+}
+
+// ------------------------------------------------------------------ Nhật ký
+const ACT = {
+  login: "Đăng nhập", upload: "Gửi tệp", upload_external: "Gửi tệp ra bên ngoài", forward: "Chuyển tiếp", file_view: "Xem tệp",
+  file_save: "Lưu tệp", recall: "Thu hồi tin", create_group: "Tạo nhóm thường", create_managed_group: "Tạo nhóm công ty",
+  create_external_group: "Tạo nhóm bên ngoài", add_members: "Thêm thành viên", remove_member: "Xóa thành viên",
+  admin_create_user: "Tạo tài khoản", admin_create_external_user: "Tạo tài khoản bên ngoài", admin_update_user: "Sửa tài khoản",
+  admin_revoke_device: "Thu hồi thiết bị", admin_trust_device: "Đặt thiết bị công ty", admin_update_conversation: "Sửa quyền nhóm",
+  admin_add_members: "Thêm thành viên (QT)", admin_remove_member: "Xóa thành viên (QT)", admin_settings: "Đổi chính sách",
+  admin_read_conversation: "Quản trị xem hội thoại", expire_sweep: "Thu hồi do hết hạn", bootstrap: "Khởi tạo hệ thống",
+};
+async function renderAudit(m, append) {
+  if (!append) {
+    m.innerHTML = `<div class="bar">
+      <select id="aa"><option value="">Mọi hành động</option>${Object.entries(ACT).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+      <select id="al"><option value="">Cả được phép và bị chặn</option><option value="0">Chỉ bị chặn</option><option value="1">Chỉ được phép</option></select>
+      <span class="grow"></span><button id="ar">Làm mới</button></div>
+      <div class="card"><table><thead><tr><th>Thời gian</th><th>Người</th><th>Hành động</th><th>Kết quả</th><th>Chi tiết</th></tr></thead><tbody id="atb"></tbody></table></div>
+      <div class="bar" style="justify-content:center;margin-top:12px"><button id="more">Xem thêm</button></div>`;
+    state.audit = [];
+    $("#aa").onchange = $("#al").onchange = $("#ar").onclick = () => renderAudit(m);
+    $("#more").onclick = () => renderAudit(m, true);
+  }
+  const p = new URLSearchParams({ limit: "100" });
+  if ($("#aa").value) p.set("action", $("#aa").value);
+  if ($("#al").value) p.set("allowed", $("#al").value);
+  if (append && state.audit.length) p.set("before_id", state.audit[state.audit.length - 1].id);
+  const rows = (await api("/api/admin/audit?" + p)).audit;
+  state.audit.push(...rows);
+  $("#more").hidden = rows.length < 100;
+  $("#atb").innerHTML = state.audit.map((a) => `<tr>
+    <td class="small" style="white-space:nowrap">${fmtDate(a.at)}</td>
+    <td>${esc(a.display_name || a.target || "")} <span class="muted small">${esc(a.username || "")}</span></td>
+    <td>${esc(ACT[a.action] || a.action)}</td>
+    <td>${a.allowed ? `<span class="chip ok">Được phép</span>` : `<span class="chip bad">Bị chặn</span>`}</td>
+    <td class="small">${esc(a.detail)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Chưa có dữ liệu</td></tr>`;
+}
+
+// ------------------------------------------------------------------ Khởi động
+(async () => {
+  if (!TOKEN) return renderLogin();
+  try { const d = await api("/api/me"); if (d.me.role !== "admin") return logout("Tài khoản này không có quyền quản trị"); ME = d.me; shell(); }
+  catch { /* api() đã chuyển về màn hình đăng nhập */ }
+})();
+</script>
+</body>
+</html>

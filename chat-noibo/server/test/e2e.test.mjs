@@ -262,3 +262,111 @@ test("nhật ký kiểm soát ghi lại các thao tác bị chặn", async () =>
   const nonAdmin = await api("/api/admin/audit", { token: ctx.an });
   assert.equal(nonAdmin.status, 403);
 });
+
+test("tài khoản bên ngoài: chỉ hoạt động trong nhóm công ty mở cho đơn vị của họ", async () => {
+  const mk = async (username, organization, expires_at) => {
+    const r = await api("/api/admin/users", {
+      token: ctx.admin,
+      method: "POST",
+      body: { username, display_name: `Đại diện ${organization}`, kind: "external", organization, password: "matkhau123", expires_at },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data.user_id;
+  };
+  ctx.ncc01_id = await mk("ncc01", "Công ty Gỗ ABC");
+  ctx.ncc02_id = await mk("ncc02", "Công ty Sơn XYZ");
+  await mk("ncc03", "Công ty Cũ", "2020-01-01");
+
+  let r = await api("/api/admin/users", { token: ctx.admin, method: "POST", body: { username: "ncc04", display_name: "x", kind: "external", password: "matkhau123" } });
+  assert.equal(r.status, 400, "tài khoản bên ngoài bắt buộc có tên đơn vị");
+
+  r = await api("/api/auth/login", { method: "POST", body: { username: "ncc03", password: "matkhau123" } });
+  assert.equal(r.status, 401);
+  assert.equal(r.data.error, "account_expired");
+
+  r = await api("/api/auth/login", { method: "POST", body: { username: "ncc01", password: "matkhau123", platform: "android" } });
+  ctx.ncc = r.data.token;
+  assert.equal(r.data.me.kind, "external");
+
+  // Không được đưa người bên ngoài vào nhóm nội bộ
+  r = await api(`/api/admin/conversations/${ctx.managed}/members`, { token: ctx.admin, method: "POST", body: { user_ids: [ctx.ncc01_id] } });
+  assert.equal(r.status, 403);
+  r = await api("/api/conversations/group", { token: ctx.an, method: "POST", body: { name: "Lén", member_ids: [ctx.ncc01_id] } });
+  assert.equal(r.status, 403);
+
+  // Nhóm bên ngoài gắn với đúng một đơn vị
+  r = await api("/api/admin/groups", {
+    token: ctx.admin,
+    method: "POST",
+    body: { name: "Mua hàng - Gỗ ABC", external: true, organization: "Công ty Gỗ ABC", member_ids: [ctx.nv001_id, ctx.ncc01_id, ctx.ncc02_id] },
+  });
+  assert.equal(r.status, 403, "NCC khác đơn vị không được vào chung nhóm");
+  r = await api("/api/admin/groups", {
+    token: ctx.admin,
+    method: "POST",
+    body: { name: "Mua hàng - Gỗ ABC", external: true, organization: "Công ty Gỗ ABC", member_ids: [ctx.nv001_id, ctx.ncc01_id] },
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  ctx.ext = r.data.conversation_id;
+  r = await api(`/api/admin/conversations/${ctx.ext}/members`, { token: ctx.admin, method: "POST", body: { user_ids: [ctx.ncc02_id] } });
+  assert.equal(r.status, 403);
+
+  // Người bên ngoài không xem danh bạ, không nhắn riêng, không tạo nhóm
+  assert.equal((await api("/api/users", { token: ctx.ncc })).status, 403);
+  assert.equal((await api("/api/conversations/dm", { token: ctx.ncc, method: "POST", body: { user_id: ctx.nv001_id } })).status, 403);
+  assert.equal((await api("/api/conversations/group", { token: ctx.ncc, method: "POST", body: { name: "x", member_ids: [] } })).status, 403);
+  // Nhân viên cũng không nhắn riêng được cho người bên ngoài, và danh bạ không hiện họ
+  assert.equal((await api("/api/conversations/dm", { token: ctx.an, method: "POST", body: { user_id: ctx.ncc01_id } })).status, 404);
+  r = await api("/api/users", { token: ctx.an });
+  assert.ok(!r.data.users.some((u) => u.username.startsWith("ncc")));
+
+  r = await api("/api/conversations", { token: ctx.ncc });
+  assert.deepEqual(r.data.conversations.map((c) => c.id), [ctx.ext]);
+  assert.equal(r.data.conversations[0].external, true);
+  assert.equal(r.data.conversations[0].policy.can_forward_out, false);
+
+  r = await api(`/api/conversations/${ctx.ext}`, { token: ctx.ncc });
+  const an = r.data.members.find((m) => m.id === ctx.nv001_id);
+  assert.equal(an.department, "", "người bên ngoài không thấy phòng ban nội bộ");
+});
+
+test("nhóm bên ngoài: gửi tệp trực tiếp được (có nhật ký), chuyển tiếp vào thì bị chặn", async () => {
+  let r = await api(`/api/conversations/${ctx.ext}/files`, {
+    token: ctx.an,
+    method: "POST",
+    headers: { "content-type": "text/plain", "x-file-name": encodeURIComponent("Đơn đặt hàng PO-001.txt") },
+    raw: "PO-001: 200 tấm gỗ",
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const po = r.data.message;
+  r = await api(`/api/files/${po.file.id}?purpose=save`, { token: ctx.ncc });
+  assert.equal(r.status, 200, "NCC tải được đơn hàng gửi cho họ");
+
+  r = await api(`/api/conversations/${ctx.ext}/messages`, { token: ctx.ncc, method: "POST", body: { text: "Báo giá: 450.000đ/tấm" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.message.sender_external, true);
+  assert.equal(r.data.message.sender_org, "Công ty Gỗ ABC");
+  const quote = r.data.message;
+
+  // Mang báo giá của NCC vào nhóm nội bộ: được
+  r = await api(`/api/messages/${quote.id}/forward`, { token: ctx.an, method: "POST", body: { conversation_id: ctx.managed2 } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  // Đưa tin nội bộ ra nhóm bên ngoài bằng chuyển tiếp: chặn
+  const internal = await api(`/api/conversations/${ctx.managed2}/messages`, { token: ctx.an, method: "POST", body: { text: "Giá vốn nội bộ 300.000đ" } });
+  r = await api(`/api/messages/${internal.data.message.id}/forward`, { token: ctx.an, method: "POST", body: { conversation_id: ctx.ext } });
+  assert.equal(r.status, 403);
+  // NCC không chuyển tiếp được gì
+  r = await api(`/api/messages/${quote.id}/forward`, { token: ctx.ncc, method: "POST", body: { conversation_id: ctx.ext } });
+  assert.equal(r.status, 403);
+
+  r = await api("/api/admin/audit?action=upload_external", { token: ctx.admin });
+  assert.ok(r.data.audit.some((a) => a.detail.includes("Công ty Gỗ ABC")));
+});
+
+test("tài khoản bên ngoài hết hạn thì mất truy cập ngay", async () => {
+  let r = await api(`/api/admin/users/${ctx.ncc01_id}`, { token: ctx.admin, method: "PATCH", body: { expires_at: Date.now() - 1000 } });
+  assert.equal(r.status, 200);
+  r = await api("/api/me", { token: ctx.ncc });
+  assert.equal(r.status, 401);
+  assert.equal(r.data.error, "account_expired");
+});

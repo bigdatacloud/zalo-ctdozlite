@@ -21,6 +21,7 @@ class ApiError implements Exception {
 class Me {
   final String userId, username, displayName, role, deviceId, platform;
   final bool trusted, mustChangePassword;
+  final String kind, organization;
   Me.fromJson(Map<String, dynamic> j)
       : userId = j['user_id'],
         username = j['username'],
@@ -29,8 +30,11 @@ class Me {
         deviceId = j['device_id'],
         platform = j['platform'],
         trusted = j['trusted'] == true,
-        mustChangePassword = j['must_change_password'] == true;
+        mustChangePassword = j['must_change_password'] == true,
+        kind = j['kind'] ?? 'internal',
+        organization = j['organization'] ?? '';
   bool get isAdmin => role == 'admin';
+  bool get isExternal => kind == 'external';
 }
 
 class Policy {
@@ -60,7 +64,8 @@ class Message {
   final String id, conversationId, senderId, senderName, kind, text;
   final int seq, createdAt;
   final FileRef? file;
-  final bool forwarded, recalled;
+  final bool forwarded, recalled, senderExternal;
+  final String senderOrg;
   final String? clientId;
   Message.fromJson(Map<String, dynamic> j)
       : id = j['id'],
@@ -68,6 +73,8 @@ class Message {
         seq = j['seq'],
         senderId = j['sender_id'],
         senderName = j['sender_name'] ?? '',
+        senderExternal = j['sender_external'] == true,
+        senderOrg = j['sender_org'] ?? '',
         kind = j['kind'],
         text = j['text'] ?? '',
         file = j['file'] == null ? null : FileRef.fromJson(j['file']),
@@ -80,7 +87,8 @@ class Message {
 class Conversation {
   final String id, kind, name;
   final String? peerId;
-  final bool managed;
+  final bool managed, external;
+  final String organization;
   final String myRole;
   int lastSeq, lastReadSeq, lastMsgAt;
   Message? lastMessage;
@@ -91,6 +99,8 @@ class Conversation {
         name = j['name'] ?? '',
         peerId = j['peer_id'],
         managed = j['managed'] == true,
+        external = j['external'] == true,
+        organization = j['organization'] ?? '',
         myRole = j['my_role'] ?? 'member',
         lastSeq = j['last_seq'] ?? 0,
         lastReadSeq = j['last_read_seq'] ?? 0,

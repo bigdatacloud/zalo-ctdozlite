@@ -1,6 +1,6 @@
 import { authenticate, createSession, hashPassword, Principal, validatePassword, verifyPassword } from "./auth";
-import { canForward, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess } from "./policy";
-import { adminRoutes } from "./admin";
+import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, requireInternal } from "./policy";
+import { adminRoutes, sweepExpired } from "./admin";
 import { audit, Env, getSettings, HttpError, json, newId, now, readJson, sha256Hex, str } from "./util";
 
 export { UserHub } from "./hub";
@@ -53,6 +53,9 @@ export default {
     for (const [k, v] of Object.entries(cors(env))) h.set(k, v);
     return new Response(res.body, { status: res.status, headers: h });
   },
+  async scheduled(_ev: ScheduledController, env: Env, exec: ExecutionContext) {
+    exec.waitUntil(sweepExpired(env));
+  },
 } satisfies ExportedHandler<Env>;
 
 async function dispatch(c: Ctx): Promise<Response> {
@@ -103,6 +106,8 @@ interface MsgRow {
   seq: number;
   sender_id: string;
   sender_name: string;
+  sender_kind: string;
+  sender_org: string;
   kind: string;
   text: string;
   file_id: string | null;
@@ -116,7 +121,7 @@ interface MsgRow {
   recalled_at: number | null;
 }
 
-const MSG_SELECT = `SELECT m.*, u.display_name AS sender_name, f.name AS file_name, f.mime AS file_mime, f.size AS file_size
+const MSG_SELECT = `SELECT m.*, u.display_name AS sender_name, u.kind AS sender_kind, u.organization AS sender_org, f.name AS file_name, f.mime AS file_mime, f.size AS file_size
   FROM messages m JOIN users u ON u.id = m.sender_id LEFT JOIN files f ON f.id = m.file_id`;
 
 function msgOut(r: MsgRow) {
@@ -127,6 +132,8 @@ function msgOut(r: MsgRow) {
     seq: r.seq,
     sender_id: r.sender_id,
     sender_name: r.sender_name,
+    sender_external: r.sender_kind === "external",
+    sender_org: r.sender_kind === "external" ? r.sender_org : "",
     kind: r.kind,
     text: recalled ? "" : r.text,
     file: !recalled && r.file_id ? { id: r.file_id, name: r.file_name, mime: r.file_mime, size: r.file_size } : null,
@@ -191,6 +198,8 @@ async function convOut(env: Env, conv: ConvRow, who: Principal, settings: Record
     name,
     peer_id: peer?.id ?? null,
     managed: !!conv.managed,
+    external: !!conv.external,
+    organization: conv.organization,
     my_role: conv.member_role,
     last_seq: conv.last_seq,
     last_read_seq: conv.last_read_seq,
@@ -222,8 +231,13 @@ route("POST", "/api/auth/login", async (c) => {
     status: string;
     password_hash: string;
     password_salt: string;
+    expires_at: number | null;
   }>();
   const ok = !!u && u.status === "active" && (await verifyPassword(password, u.password_hash, u.password_salt));
+  if (ok && u!.expires_at && u!.expires_at < now()) {
+    await audit(c.env, { user_id: u!.id, action: "login", target: username.toLowerCase(), allowed: false, detail: "expired" });
+    throw new HttpError(401, "account_expired", "Tài khoản đã hết hạn sử dụng, liên hệ người phụ trách bên công ty");
+  }
   if (!ok) {
     await audit(c.env, { user_id: u?.id, action: "login", target: username.toLowerCase(), allowed: false, detail: platform });
     throw new HttpError(401, "bad_credentials", "Sai mã nhân viên hoặc mật khẩu");
@@ -284,12 +298,14 @@ route("GET", "/api/ws", async (c) => {
 // Danh bạ
 
 route("GET", "/api/users", async (c) => {
-  await authenticate(c.env, c.req);
+  const me = await authenticate(c.env, c.req);
+  const d = requireInternal(me, "xem danh bạ công ty");
+  if (!d.ok) throw new HttpError(403, "policy_denied", d.reason);
   const q = (c.url.searchParams.get("q") ?? "").trim();
   const like = `%${q}%`;
   const r = await c.env.DB.prepare(
     `SELECT id, username, display_name, department FROM users
-      WHERE status = 'active' AND (? = '' OR display_name LIKE ? OR username LIKE ? OR department LIKE ?)
+      WHERE status = 'active' AND kind = 'internal' AND (? = '' OR display_name LIKE ? OR username LIKE ? OR department LIKE ?)
       ORDER BY display_name LIMIT 200`,
   )
     .bind(q, like, like, like)
@@ -324,10 +340,12 @@ route("GET", "/api/conversations", async (c) => {
 
 route("POST", "/api/conversations/dm", async (c) => {
   const me = await authenticate(c.env, c.req);
+  const ri = requireInternal(me, "nhắn tin riêng");
+  if (!ri.ok) throw new HttpError(403, "policy_denied", ri.reason);
   const b = await readJson<{ user_id?: string }>(c.req);
   const other = str(b.user_id, "user_id", 64);
   if (other === me.user_id) throw new HttpError(400, "bad_field", "Không thể nhắn với chính mình");
-  const peer = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND status = 'active'").bind(other).first();
+  const peer = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND status = 'active' AND kind = 'internal'").bind(other).first();
   if (!peer) throw new HttpError(404, "user_not_found", "Không tìm thấy người dùng");
   const key = [me.user_id, other].sort().join(":");
   let id = (await c.env.DB.prepare("SELECT id FROM conversations WHERE dm_key = ?").bind(key).first<{ id: string }>())?.id;
@@ -356,21 +374,27 @@ export async function createGroup(
   memberIdsIn: string[],
   managed: boolean,
   flags: Partial<ReturnType<typeof defaultsFor>> = {},
+  external: { organization: string } | null = null,
 ) {
   const ids = [...new Set([me.user_id, ...memberIdsIn])].slice(0, 2000);
   const valid = await c.env.DB.prepare(
-    `SELECT id FROM users WHERE status='active' AND id IN (${ids.map(() => "?").join(",")})`,
+    `SELECT id, kind, organization, display_name FROM users WHERE status='active' AND id IN (${ids.map(() => "?").join(",")})`,
   )
     .bind(...ids)
-    .all<{ id: string }>();
-  const d = { ...defaultsFor("group", managed), ...flags };
+    .all<{ id: string; kind: string; organization: string; display_name: string }>();
+  const convShape = { external: external ? 1 : 0, organization: external?.organization ?? "" };
+  for (const u of valid.results) {
+    const j = canJoin(convShape, u);
+    if (!j.ok) throw new HttpError(403, "policy_denied", `${u.display_name}: ${j.reason}`);
+  }
+  const d = { ...defaultsFor("group", managed, !!external), ...flags };
   const id = newId("c");
   const t = now();
   const stmts = [
     c.env.DB.prepare(
-      `INSERT INTO conversations(id,kind,name,managed,allow_upload,allow_forward_out,allow_copy,allow_save_file,created_by,created_at,last_msg_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(id, "group", name, managed ? 1 : 0, d.allow_upload, d.allow_forward_out, d.allow_copy, d.allow_save_file, me.user_id, t, t),
+      `INSERT INTO conversations(id,kind,name,managed,allow_upload,allow_forward_out,allow_copy,allow_save_file,created_by,created_at,last_msg_at,external,organization)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(id, "group", name, managed ? 1 : 0, d.allow_upload, d.allow_forward_out, d.allow_copy, d.allow_save_file, me.user_id, t, t, convShape.external, convShape.organization),
     ...valid.results.map((u) =>
       c.env.DB.prepare("INSERT INTO members(conversation_id,user_id,role,joined_at) VALUES (?,?,?,?)").bind(
         id,
@@ -381,7 +405,7 @@ export async function createGroup(
     ),
   ];
   await c.env.DB.batch(stmts);
-  await audit(c.env, { user_id: me.user_id, device_id: me.device_id, action: managed ? "create_managed_group" : "create_group", conversation_id: id, allowed: true, detail: name });
+  await audit(c.env, { user_id: me.user_id, device_id: me.device_id, action: external ? "create_external_group" : managed ? "create_managed_group" : "create_group", conversation_id: id, allowed: true, detail: external ? `${name} [${external.organization}]` : name });
   await insertMessage(c, id, me.user_id, { kind: "system", text: `${me.display_name} đã tạo nhóm "${name}"` });
   fanout(c, valid.results.map((u) => u.id), { type: "conversation_changed", conversation_id: id });
   return id;
@@ -390,6 +414,8 @@ export async function createGroup(
 route("POST", "/api/conversations/group", async (c) => {
   const me = await authenticate(c.env, c.req);
   const settings = await getSettings(c.env);
+  const ri = requireInternal(me, "tạo nhóm");
+  if (!ri.ok) throw new HttpError(403, "policy_denied", ri.reason);
   if (settings.members_can_create_groups !== "1" && me.role !== "admin")
     throw new HttpError(403, "forbidden", "Chỉ quản trị viên được tạo nhóm");
   const b = await readJson<{ name?: string; member_ids?: string[] }>(c.req);
@@ -401,12 +427,17 @@ route("GET", "/api/conversations/:id", async (c, p) => {
   const me = await authenticate(c.env, c.req);
   const conv = await loadConv(c.env, p.id, me.user_id);
   const members = await c.env.DB.prepare(
-    `SELECT u.id, u.display_name, u.department, m.role FROM members m JOIN users u ON u.id = m.user_id
-      WHERE m.conversation_id = ? ORDER BY u.display_name`,
+    `SELECT u.id, u.display_name, u.department, u.kind, u.organization, m.role FROM members m JOIN users u ON u.id = m.user_id
+      WHERE m.conversation_id = ? ORDER BY u.kind DESC, u.display_name`,
   )
     .bind(p.id)
-    .all();
-  return json({ conversation: await convOut(c.env, conv, me, await getSettings(c.env)), members: members.results });
+    .all<{ id: string; display_name: string; department: string; kind: string; organization: string; role: string }>();
+  // Người bên ngoài không cần biết sơ đồ phòng ban của công ty.
+  const list = members.results.map((m) => ({
+    ...m,
+    department: me.kind === "external" && m.kind === "internal" ? "" : m.department,
+  }));
+  return json({ conversation: await convOut(c.env, conv, me, await getSettings(c.env)), members: list });
 });
 
 route("GET", "/api/conversations/:id/messages", async (c, p) => {
@@ -469,7 +500,7 @@ route("POST", "/api/conversations/:id/files", async (c, p) => {
   )
     .bind(fileId, conv.id, me.user_id, key, name, mime, body.byteLength, sha, now())
     .run();
-  await audit(c.env, { user_id: me.user_id, device_id: me.device_id, action: "upload", conversation_id: conv.id, target: fileId, allowed: true, detail: `${name} (${body.byteLength} B, sha256 ${sha})` });
+  await audit(c.env, { user_id: me.user_id, device_id: me.device_id, action: conv.external ? "upload_external" : "upload", conversation_id: conv.id, target: fileId, allowed: true, detail: `${name} (${body.byteLength} B, sha256 ${sha})${conv.external ? ` → bên ngoài: ${conv.organization}` : ""}` });
   const message = await insertMessage(c, conv.id, me.user_id, {
     kind: mime.startsWith("image/") ? "image" : "file",
     text: c.url.searchParams.get("caption")?.slice(0, 2000) ?? "",
@@ -499,6 +530,7 @@ route("POST", "/api/conversations/:id/members", async (c, p) => {
   const b = await readJson<{ user_ids?: string[] }>(c.req);
   const ids = (Array.isArray(b.user_ids) ? b.user_ids : []).map(String).slice(0, 500);
   if (!ids.length) throw new HttpError(400, "bad_field", "Chưa chọn thành viên");
+  await assertCanJoin(c.env, conv, ids);
   const t = now();
   await c.env.DB.batch(
     ids.map((u) =>
@@ -532,6 +564,8 @@ route("DELETE", "/api/conversations/:id/members/:uid", async (c, p) => {
 
 route("POST", "/api/messages/:id/forward", async (c, p) => {
   const me = await authenticate(c.env, c.req);
+  const ri = requireInternal(me, "chuyển tiếp tin nhắn");
+  if (!ri.ok) throw new HttpError(403, "policy_denied", ri.reason);
   const msg = await loadMsg(c.env, p.id);
   if (!msg || msg.recalled_at) throw new HttpError(404, "message_not_found", "Không tìm thấy tin nhắn");
   const src = await loadConv(c.env, msg.conversation_id, me.user_id);
@@ -607,3 +641,14 @@ route("GET", "/api/files/:id", async (c, p) => {
 });
 
 adminRoutes(route);
+
+export async function assertCanJoin(env: Env, conv: { external: number; organization: string }, ids: string[]) {
+  if (!ids.length) return;
+  const r = await env.DB.prepare(`SELECT id, kind, organization, display_name FROM users WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .bind(...ids)
+    .all<{ id: string; kind: string; organization: string; display_name: string }>();
+  for (const u of r.results) {
+    const j = canJoin(conv, u);
+    if (!j.ok) throw new HttpError(403, "policy_denied", `${u.display_name}: ${j.reason}`);
+  }
+}

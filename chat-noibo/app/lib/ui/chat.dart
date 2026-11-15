@@ -179,7 +179,10 @@ class _Header extends StatelessWidget {
     final p = context.pal;
     final pol = conv.policy;
     final chips = <Widget>[
-      if (conv.managed) _chip(context, Icons.verified_user, 'Nhóm công ty', p.primary),
+      if (conv.external)
+        _chip(context, Icons.public, 'Có người bên ngoài · ${conv.organization}', p.external)
+      else if (conv.managed)
+        _chip(context, Icons.verified_user, 'Nhóm công ty', p.primary),
       _chip(context, pol.canUpload ? Icons.attach_file : Icons.block, pol.canUpload ? 'Được gửi tệp' : 'Cấm gửi tệp',
           pol.canUpload ? p.online : p.textMuted),
       if (!pol.canForwardOut) _chip(context, Icons.forward_to_inbox, 'Cấm chuyển tiếp', p.warning),
@@ -360,7 +363,10 @@ class _Bubble extends StatelessWidget {
           if (showName)
             Padding(
               padding: const EdgeInsets.only(left: 4, bottom: 2),
-              child: Text(msg.senderName, style: TextStyle(fontSize: 12, color: p.textMuted, fontWeight: FontWeight.w600)),
+              child: Text.rich(TextSpan(children: [
+                TextSpan(text: msg.senderName),
+                if (msg.senderExternal) TextSpan(text: '  ${msg.senderOrg}', style: TextStyle(color: p.external)),
+              ]), style: TextStyle(fontSize: 12, color: p.textMuted, fontWeight: FontWeight.w600)),
             ),
           GestureDetector(
             onSecondaryTapDown: (d) => _menu(context, d.globalPosition),

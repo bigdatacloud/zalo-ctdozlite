@@ -13,7 +13,7 @@ Bố cục, bảng màu và cách hiển thị tham khảo từ ctdozlite (`src/
 |---|---|---|
 | Luật chặn nằm ở đâu | Trong app trên máy người dùng, dễ vượt | Trên máy chủ công ty, client không vượt được |
 | Điện thoại | Zalo gốc vẫn chạy song song, chuyển tiếp thoải mái | Cùng một luật cho mọi thiết bị |
-| Người nhận bên ngoài | Có thể có trong nhóm | Không tồn tại: chỉ tài khoản công ty cấp |
+| Người bên ngoài | Lẫn vào bất kỳ nhóm nào | Chỉ vào được nhóm "bên ngoài" của đúng đơn vị họ, do công ty mở |
 | Chặn Zalo bằng tường lửa | Không được (client dùng chung máy chủ Zalo) | Chặn toàn bộ `*.zalo.me`, `*.zaloapp.com` được |
 | Nghỉ việc / mất máy | Không làm gì được | Khóa tài khoản → mọi thiết bị bị đăng xuất và xóa dữ liệu ngay |
 
@@ -36,6 +36,34 @@ Thêm vào đó:
 - Mọi thao tác gửi tệp, mở tệp, lưu tệp, chuyển tiếp, đăng nhập (kể cả bị chặn) đều được ghi vào `audit`. Quản trị viên xem nội dung hội thoại của người khác phải ghi lý do, và lần xem đó cũng bị ghi lại.
 
 Toàn bộ luật nằm trong `server/src/policy.ts`. Kiểm thử đầu-cuối ở `server/test/e2e.test.mjs` chạy với D1/R2/Durable Objects thật của workerd.
+
+## Nhà cung cấp và khách hàng (tài khoản bên ngoài)
+
+Công ty tạo tài khoản cho đối tác ở trang quản trị (loại "Bên ngoài", bắt buộc ghi tên đơn vị, có thể đặt hạn sử dụng). Sau đó tạo **nhóm có người bên ngoài** gắn với đúng đơn vị đó, ví dụ "Mua hàng - Gỗ ABC". Đối tác cài cùng ứng dụng và đăng nhập bằng tài khoản được cấp.
+
+| Luật | Áp dụng |
+|---|---|
+| Người bên ngoài xem danh bạ công ty, nhắn riêng, tạo nhóm | **Cấm** |
+| Nhân viên nhắn riêng cho người bên ngoài | **Cấm**: mọi trao đổi với đối tác đi qua nhóm, có người phụ trách và nhật ký |
+| Đưa người bên ngoài vào nhóm nội bộ | **Cấm** |
+| Một nhóm bên ngoài chứa người của hai đơn vị khác nhau | **Cấm**: NCC A không bao giờ thấy NCC B |
+| Gửi tệp trực tiếp vào nhóm bên ngoài (đơn hàng, bản vẽ) | Được, ghi nhật ký riêng "Gửi tệp ra bên ngoài" kèm tên đơn vị và mã băm tệp |
+| Chuyển tiếp tin từ bất kỳ đâu **vào** nhóm bên ngoài | **Cấm**: muốn đưa gì ra ngoài phải chủ động gửi, có dấu vết |
+| Chuyển tiếp báo giá/tài liệu của đối tác **vào** nhóm công ty | Được |
+| Người bên ngoài chuyển tiếp tin | **Cấm** |
+| Người bên ngoài thấy phòng ban của nhân viên | Không (ẩn) |
+| Tài khoản hết hạn | Không đăng nhập được; thiết bị đang mở bị thu hồi và xóa dữ liệu trong vòng 15 phút (tác vụ định kỳ) |
+
+Khách hàng không chịu dùng ứng dụng thì làm việc qua email như anh đã quyết, hệ thống này không cần làm gì thêm cho trường hợp đó.
+
+## Trang quản trị
+
+`https://<tên-miền>/admin/`, đăng nhập bằng tài khoản quản trị viên. Các mục:
+- **Tài khoản**: tạo nhân viên hoặc đối tác, nhập hàng loạt từ Excel (dán cột mã, họ tên, phòng ban; tải về CSV mật khẩu ban đầu), đặt lại mật khẩu, khóa, gia hạn.
+- **Nhóm**: tạo nhóm công ty hoặc nhóm bên ngoài, bật/tắt từng quyền (gửi tệp, chuyển tiếp ra, sao chép, lưu tệp), thêm/xóa thành viên. Danh sách chọn người chỉ hiện những người được phép vào nhóm đó.
+- **Thiết bị**: xem ai đăng nhập ở đâu, đánh dấu điện thoại công ty cấp, thu hồi thiết bị.
+- **Chính sách**: luật chung toàn công ty.
+- **Nhật ký**: lọc theo hành động, xem riêng các thao tác bị chặn.
 
 ## Triển khai máy chủ (Cloudflare)
 
@@ -60,7 +88,7 @@ curl -X POST https://chat.congty.vn/api/admin/bootstrap -H 'content-type: applic
   -d '{"token":"<ADMIN_BOOTSTRAP_TOKEN>","username":"admin","display_name":"Phòng IT","password":"<mật khẩu mạnh>"}'
 ```
 
-Sau đó dùng API `/api/admin/*` để tạo tài khoản, nhóm công ty, đổi chính sách, xem nhật ký (xem `server/src/admin.ts`). Chưa có giao diện quản trị.
+Sau đó vào `https://chat.congty.vn/admin/` để làm mọi việc còn lại.
 
 Chạy thử trên máy: `npm run db:migrate:local && npm run dev`, rồi `node scripts/seed-demo.mjs` để có dữ liệu mẫu (đăng nhập `nv001` / `matkhau123`).
 
@@ -85,7 +113,8 @@ Phát hành:
 ## Giới hạn và rủi ro đã biết
 
 - **Chưa có thông báo đẩy** (FCM/APNs). Điện thoại chỉ nhận tin khi app đang mở. Đây là việc cần làm tiếp theo, và chỉ nên đẩy thông báo không kèm nội dung để nội dung không đi qua máy chủ Google/Apple.
-- Chưa có: gọi thoại/video, trả lời trích dẫn, cảm xúc, tìm kiếm tin nhắn, xem PDF/Office trong app (hiện chỉ xem được ảnh và văn bản; tệp loại khác chỉ mở được ở nơi có quyền lưu), giao diện quản trị web.
+- Chưa có: gọi thoại/video, trả lời trích dẫn, cảm xúc, tìm kiếm tin nhắn, xem PDF/Office trong app (hiện chỉ xem được ảnh và văn bản; tệp loại khác chỉ mở được ở nơi có quyền lưu).
+- Chưa tự gửi email thông tin đăng nhập cho đối tác: trang quản trị hiện mật khẩu một lần để IT gửi thủ công.
 - **Dung lượng D1**: mỗi cơ sở dữ liệu D1 có giới hạn dung lượng (10 GB tại thời điểm viết, cần kiểm tra lại). Ước tính khoảng 0,4 KB/tin kể cả chỉ mục: 500 người × 200 tin/ngày ≈ 40 MB/ngày ≈ 14 GB/năm. Sẽ chạm giới hạn trước một năm nếu không lưu trữ tin cũ ra R2 hoặc chia DB theo năm. Phải làm trước khi vượt khoảng 70% giới hạn.
 - **Không mã hóa đầu-cuối, có chủ đích**: máy chủ phải đọc được nội dung để thực thi luật, lưu nhật ký và điều tra rò rỉ. Dữ liệu được Cloudflare mã hóa khi lưu, nhưng về mặt kỹ thuật Cloudflare (một công ty Mỹ) nắm khóa. Nếu công ty thuộc diện phải lưu dữ liệu tại Việt Nam theo Nghị định 53/2022 thì Cloudflare không đáp ứng; cần pháp chế xác nhận.
 - Điện thoại cá nhân vẫn chụp ảnh màn hình được bằng máy khác. Hình mờ chỉ răn đe, không ngăn chặn.

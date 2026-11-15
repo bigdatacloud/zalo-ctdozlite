@@ -1,6 +1,6 @@
 // API quản trị: tài khoản, thiết bị, nhóm công ty, chính sách, nhật ký.
 import { authenticate, hashPassword, Principal, validatePassword } from "./auth";
-import { createGroup, fanout, fanoutConv, route as routeFn } from "./index";
+import { assertCanJoin, createGroup, fanout, fanoutConv, route as routeFn } from "./index";
 import { audit, bool01, Env, getSettings, HttpError, json, newId, now, readJson, str } from "./util";
 
 type Route = typeof routeFn;
@@ -11,12 +11,22 @@ async function requireAdmin(env: Env, req: Request): Promise<Principal> {
   return me;
 }
 
-async function revokeUserEverywhere(env: Env, userId: string, reason: string) {
+export async function revokeUserEverywhere(env: Env, userId: string, reason: string) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
     env.DB.prepare("UPDATE devices SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(now(), userId),
   ]);
   await env.HUB.get(env.HUB.idFromName(userId)).revoke(null, reason);
+}
+
+/** Nhận ngày hết hạn dạng số mili-giây hoặc chuỗi "YYYY-MM-DD" (hết ngày đó, giờ VN). */
+function parseExpiry(v: unknown): number | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null || v === "") return null;
+  if (typeof v === "number") return v;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v));
+  if (!m) throw new HttpError(400, "bad_field", "Ngày hết hạn phải có dạng YYYY-MM-DD");
+  return Date.parse(`${m[1]}-${m[2]}-${m[3]}T23:59:59+07:00`);
 }
 
 const SETTING_KEYS: Record<string, string[]> = {
@@ -49,14 +59,32 @@ export function adminRoutes(route: Route) {
   route("GET", "/api/admin/users", async (c) => {
     await requireAdmin(c.env, c.req);
     const r = await c.env.DB.prepare(
-      "SELECT id, username, display_name, department, role, status, must_change_password, created_at FROM users ORDER BY username",
+      `SELECT u.id, u.username, u.display_name, u.department, u.role, u.status, u.must_change_password, u.created_at,
+              u.kind, u.organization, u.email, u.sponsor_id, s.display_name AS sponsor_name, u.expires_at,
+              (SELECT MAX(last_seen) FROM devices d WHERE d.user_id = u.id) AS last_seen
+         FROM users u LEFT JOIN users s ON s.id = u.sponsor_id ORDER BY u.kind, u.username`,
     ).all();
     return json({ users: r.results });
   });
 
   route("POST", "/api/admin/users", async (c) => {
     const me = await requireAdmin(c.env, c.req);
-    const b = await readJson<{ username?: string; display_name?: string; department?: string; password?: string; role?: string }>(c.req);
+    const b = await readJson<{
+      username?: string;
+      display_name?: string;
+      department?: string;
+      password?: string;
+      role?: string;
+      kind?: string;
+      organization?: string;
+      email?: string;
+      sponsor_id?: string;
+      expires_at?: unknown;
+    }>(c.req);
+    const kind = b.kind === "external" ? "external" : "internal";
+    const organization = kind === "external" ? str(b.organization, "organization (tên đơn vị)", 120) : "";
+    if (kind === "external" && b.role === "admin") throw new HttpError(400, "bad_field", "Tài khoản bên ngoài không thể là quản trị viên");
+    const expires = parseExpiry(b.expires_at) ?? null;
     const password = str(b.password, "password", 256);
     validatePassword(password);
     const h = await hashPassword(password);
@@ -64,26 +92,50 @@ export function adminRoutes(route: Route) {
     const username = str(b.username, "username", 64);
     try {
       await c.env.DB.prepare(
-        "INSERT INTO users(id,username,display_name,department,role,password_hash,password_salt,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        `INSERT INTO users(id,username,display_name,department,role,password_hash,password_salt,created_at,kind,organization,email,sponsor_id,expires_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-        .bind(id, username, str(b.display_name, "display_name", 120), (b.department ?? "").slice(0, 120), b.role === "admin" ? "admin" : "member", h.hash, h.salt, now())
+        .bind(
+          id,
+          username,
+          str(b.display_name, "display_name", 120),
+          (b.department ?? "").slice(0, 120),
+          b.role === "admin" ? "admin" : "member",
+          h.hash,
+          h.salt,
+          now(),
+          kind,
+          organization,
+          (b.email ?? "").slice(0, 200),
+          b.sponsor_id || me.user_id,
+          expires,
+        )
         .run();
     } catch (e) {
       if (String(e).includes("UNIQUE")) throw new HttpError(409, "username_taken", "Mã nhân viên đã tồn tại");
       throw e;
     }
-    await audit(c.env, { user_id: me.user_id, action: "admin_create_user", target: id, allowed: true, detail: username });
+    await audit(c.env, { user_id: me.user_id, action: kind === "external" ? "admin_create_external_user" : "admin_create_user", target: id, allowed: true, detail: kind === "external" ? `${username} [${organization}]` : username });
     return json({ user_id: id });
   });
 
   route("PATCH", "/api/admin/users/:id", async (c, p) => {
     const me = await requireAdmin(c.env, c.req);
-    const b = await readJson<{ display_name?: string; department?: string; role?: string; status?: string; password?: string }>(c.req);
+    const b = await readJson<{ display_name?: string; department?: string; role?: string; status?: string; password?: string; email?: string; expires_at?: unknown; sponsor_id?: string }>(c.req);
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (b.display_name !== undefined) (sets.push("display_name=?"), vals.push(str(b.display_name, "display_name", 120)));
     if (b.department !== undefined) (sets.push("department=?"), vals.push(String(b.department).slice(0, 120)));
-    if (b.role !== undefined) (sets.push("role=?"), vals.push(b.role === "admin" ? "admin" : "member"));
+    if (b.role !== undefined) {
+      const k = await c.env.DB.prepare("SELECT kind FROM users WHERE id = ?").bind(p.id).first<{ kind: string }>();
+      if (b.role === "admin" && k?.kind === "external") throw new HttpError(400, "bad_field", "Tài khoản bên ngoài không thể là quản trị viên");
+      sets.push("role=?");
+      vals.push(b.role === "admin" ? "admin" : "member");
+    }
+    if (b.email !== undefined) (sets.push("email=?"), vals.push(String(b.email).slice(0, 200)));
+    if (b.sponsor_id !== undefined) (sets.push("sponsor_id=?"), vals.push(String(b.sponsor_id)));
+    const exp = parseExpiry(b.expires_at);
+    if (exp !== undefined) (sets.push("expires_at=?"), vals.push(exp));
     if (b.status !== undefined) (sets.push("status=?"), vals.push(b.status === "disabled" ? "disabled" : "active"));
     if (b.password !== undefined) {
       validatePassword(b.password);
@@ -134,20 +186,21 @@ export function adminRoutes(route: Route) {
   // Nhóm do công ty quản lý: chỉ quản trị viên tạo, mặc định cho gửi tệp, cấm chuyển tiếp/sao chép ra ngoài.
   route("POST", "/api/admin/groups", async (c) => {
     const me = await requireAdmin(c.env, c.req);
-    const b = await readJson<{ name?: string; member_ids?: string[]; allow_upload?: boolean; allow_forward_out?: boolean; allow_copy?: boolean; allow_save_file?: boolean }>(c.req);
+    const b = await readJson<{ name?: string; member_ids?: string[]; allow_upload?: boolean; allow_forward_out?: boolean; allow_copy?: boolean; allow_save_file?: boolean; external?: boolean; organization?: string }>(c.req);
     const flags: Record<string, 0 | 1> = {};
     for (const k of ["allow_upload", "allow_forward_out", "allow_copy", "allow_save_file"] as const) {
       const v = bool01(b[k]);
       if (v !== undefined) flags[k] = v;
     }
-    const id = await createGroup(c, me, str(b.name, "name", 120), Array.isArray(b.member_ids) ? b.member_ids.map(String) : [], true, flags);
+    const external = b.external ? { organization: str(b.organization, "organization (tên đơn vị)", 120) } : null;
+    const id = await createGroup(c, me, str(b.name, "name", 120), Array.isArray(b.member_ids) ? b.member_ids.map(String) : [], true, flags, external);
     return json({ conversation_id: id });
   });
 
   route("GET", "/api/admin/conversations", async (c) => {
     await requireAdmin(c.env, c.req);
     const r = await c.env.DB.prepare(
-      `SELECT c.id, c.kind, c.name, c.managed, c.allow_upload, c.allow_forward_out, c.allow_copy, c.allow_save_file,
+      `SELECT c.id, c.kind, c.name, c.managed, c.external, c.organization, c.allow_upload, c.allow_forward_out, c.allow_copy, c.allow_save_file,
               c.created_by, c.created_at, c.last_msg_at, (SELECT COUNT(*) FROM members m WHERE m.conversation_id = c.id) AS member_count
          FROM conversations c WHERE c.kind = 'group' ORDER BY c.last_msg_at DESC LIMIT 1000`,
     ).all();
@@ -175,6 +228,11 @@ export function adminRoutes(route: Route) {
     const me = await requireAdmin(c.env, c.req);
     const b = await readJson<{ user_ids?: string[]; role?: string }>(c.req);
     const ids = (Array.isArray(b.user_ids) ? b.user_ids : []).map(String).slice(0, 2000);
+    const conv = await c.env.DB.prepare("SELECT external, organization FROM conversations WHERE id = ? AND kind = 'group'")
+      .bind(p.id)
+      .first<{ external: number; organization: string }>();
+    if (!conv) throw new HttpError(404, "conversation_not_found", "Không tìm thấy nhóm");
+    await assertCanJoin(c.env, conv, ids);
     const t = now();
     await c.env.DB.batch(
       ids.map((u) =>
@@ -188,6 +246,26 @@ export function adminRoutes(route: Route) {
     await audit(c.env, { user_id: me.user_id, action: "admin_add_members", conversation_id: p.id, allowed: true, detail: ids.join(",") });
     fanout(c, ids, { type: "conversation_changed", conversation_id: p.id });
     await fanoutConv(c, p.id, { type: "conversation_changed", conversation_id: p.id });
+    return json({ ok: true });
+  });
+
+  route("GET", "/api/admin/conversations/:id/members", async (c, p) => {
+    await requireAdmin(c.env, c.req);
+    const r = await c.env.DB.prepare(
+      `SELECT u.id, u.username, u.display_name, u.department, u.kind, u.organization, m.role, m.joined_at
+         FROM members m JOIN users u ON u.id = m.user_id WHERE m.conversation_id = ? ORDER BY u.kind DESC, u.display_name`,
+    )
+      .bind(p.id)
+      .all();
+    return json({ members: r.results });
+  });
+
+  route("DELETE", "/api/admin/conversations/:id/members/:uid", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const before = (await c.env.DB.prepare("SELECT user_id FROM members WHERE conversation_id = ?").bind(p.id).all<{ user_id: string }>()).results.map((x) => x.user_id);
+    await c.env.DB.prepare("DELETE FROM members WHERE conversation_id = ? AND user_id = ?").bind(p.id, p.uid).run();
+    await audit(c.env, { user_id: me.user_id, action: "admin_remove_member", conversation_id: p.id, target: p.uid, allowed: true });
+    fanout(c, before, { type: "conversation_changed", conversation_id: p.id });
     return json({ ok: true });
   });
 
@@ -238,4 +316,19 @@ export function adminRoutes(route: Route) {
     return json({ messages: r.results });
   });
 
+}
+
+/** Chạy định kỳ: tài khoản hết hạn còn thiết bị đang mở thì thu hồi và yêu cầu xóa dữ liệu. */
+export async function sweepExpired(env: Env) {
+  const r = await env.DB.prepare(
+    `SELECT DISTINCT u.id FROM users u JOIN devices d ON d.user_id = u.id
+      WHERE u.expires_at IS NOT NULL AND u.expires_at < ? AND d.revoked_at IS NULL`,
+  )
+    .bind(now())
+    .all<{ id: string }>();
+  for (const u of r.results) {
+    await revokeUserEverywhere(env, u.id, "Tài khoản đã hết hạn sử dụng");
+    await audit(env, { user_id: u.id, action: "expire_sweep", allowed: true });
+  }
+  return r.results.length;
 }
