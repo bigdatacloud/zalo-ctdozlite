@@ -1,0 +1,241 @@
+// API quản trị: tài khoản, thiết bị, nhóm công ty, chính sách, nhật ký.
+import { authenticate, hashPassword, Principal, validatePassword } from "./auth";
+import { createGroup, fanout, fanoutConv, route as routeFn } from "./index";
+import { audit, bool01, Env, getSettings, HttpError, json, newId, now, readJson, str } from "./util";
+
+type Route = typeof routeFn;
+
+async function requireAdmin(env: Env, req: Request): Promise<Principal> {
+  const me = await authenticate(env, req);
+  if (me.role !== "admin") throw new HttpError(403, "forbidden", "Cần quyền quản trị");
+  return me;
+}
+
+async function revokeUserEverywhere(env: Env, userId: string, reason: string) {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
+    env.DB.prepare("UPDATE devices SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(now(), userId),
+  ]);
+  await env.HUB.get(env.HUB.idFromName(userId)).revoke(null, reason);
+}
+
+const SETTING_KEYS: Record<string, string[]> = {
+  dm_upload: ["0", "1"],
+  members_can_create_groups: ["0", "1"],
+  mobile_untrusted_files: ["allow", "view", "deny"],
+};
+
+export function adminRoutes(route: Route) {
+  // Tạo quản trị viên đầu tiên. Chỉ chạy được khi chưa có người dùng nào.
+  route("POST", "/api/admin/bootstrap", async (c) => {
+    const b = await readJson<{ token?: string; username?: string; display_name?: string; password?: string }>(c.req);
+    if (!c.env.ADMIN_BOOTSTRAP_TOKEN || b.token !== c.env.ADMIN_BOOTSTRAP_TOKEN)
+      throw new HttpError(403, "forbidden", "Mã khởi tạo không đúng");
+    const count = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
+    if ((count?.n ?? 0) > 0) throw new HttpError(409, "already_bootstrapped", "Hệ thống đã được khởi tạo");
+    const password = str(b.password, "password", 256);
+    validatePassword(password);
+    const h = await hashPassword(password);
+    const id = newId("u");
+    await c.env.DB.prepare(
+      "INSERT INTO users(id,username,display_name,role,password_hash,password_salt,must_change_password,created_at) VALUES (?,?,?,?,?,?,0,?)",
+    )
+      .bind(id, str(b.username, "username", 64), str(b.display_name, "display_name", 120), "admin", h.hash, h.salt, now())
+      .run();
+    await audit(c.env, { user_id: id, action: "bootstrap", allowed: true });
+    return json({ ok: true, user_id: id });
+  });
+
+  route("GET", "/api/admin/users", async (c) => {
+    await requireAdmin(c.env, c.req);
+    const r = await c.env.DB.prepare(
+      "SELECT id, username, display_name, department, role, status, must_change_password, created_at FROM users ORDER BY username",
+    ).all();
+    return json({ users: r.results });
+  });
+
+  route("POST", "/api/admin/users", async (c) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ username?: string; display_name?: string; department?: string; password?: string; role?: string }>(c.req);
+    const password = str(b.password, "password", 256);
+    validatePassword(password);
+    const h = await hashPassword(password);
+    const id = newId("u");
+    const username = str(b.username, "username", 64);
+    try {
+      await c.env.DB.prepare(
+        "INSERT INTO users(id,username,display_name,department,role,password_hash,password_salt,created_at) VALUES (?,?,?,?,?,?,?,?)",
+      )
+        .bind(id, username, str(b.display_name, "display_name", 120), (b.department ?? "").slice(0, 120), b.role === "admin" ? "admin" : "member", h.hash, h.salt, now())
+        .run();
+    } catch (e) {
+      if (String(e).includes("UNIQUE")) throw new HttpError(409, "username_taken", "Mã nhân viên đã tồn tại");
+      throw e;
+    }
+    await audit(c.env, { user_id: me.user_id, action: "admin_create_user", target: id, allowed: true, detail: username });
+    return json({ user_id: id });
+  });
+
+  route("PATCH", "/api/admin/users/:id", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ display_name?: string; department?: string; role?: string; status?: string; password?: string }>(c.req);
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (b.display_name !== undefined) (sets.push("display_name=?"), vals.push(str(b.display_name, "display_name", 120)));
+    if (b.department !== undefined) (sets.push("department=?"), vals.push(String(b.department).slice(0, 120)));
+    if (b.role !== undefined) (sets.push("role=?"), vals.push(b.role === "admin" ? "admin" : "member"));
+    if (b.status !== undefined) (sets.push("status=?"), vals.push(b.status === "disabled" ? "disabled" : "active"));
+    if (b.password !== undefined) {
+      validatePassword(b.password);
+      const h = await hashPassword(b.password);
+      sets.push("password_hash=?", "password_salt=?", "must_change_password=1");
+      vals.push(h.hash, h.salt);
+    }
+    if (!sets.length) throw new HttpError(400, "bad_field", "Không có gì để cập nhật");
+    await c.env.DB.prepare(`UPDATE users SET ${sets.join(",")} WHERE id = ?`).bind(...vals, p.id).run();
+    if (b.status === "disabled" || b.password !== undefined) await revokeUserEverywhere(c.env, p.id, b.status === "disabled" ? "Tài khoản đã bị khóa" : "Mật khẩu đã được đặt lại");
+    await audit(c.env, { user_id: me.user_id, action: "admin_update_user", target: p.id, allowed: true, detail: Object.keys(b).join(",") });
+    return json({ ok: true });
+  });
+
+  route("GET", "/api/admin/devices", async (c) => {
+    await requireAdmin(c.env, c.req);
+    const uid = c.url.searchParams.get("user_id");
+    const r = await c.env.DB.prepare(
+      `SELECT d.*, u.username, u.display_name FROM devices d JOIN users u ON u.id = d.user_id
+        WHERE (? IS NULL OR d.user_id = ?) ORDER BY d.last_seen DESC LIMIT 500`,
+    )
+      .bind(uid, uid)
+      .all();
+    return json({ devices: r.results });
+  });
+
+  route("PATCH", "/api/admin/devices/:id", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ trusted?: boolean }>(c.req);
+    await c.env.DB.prepare("UPDATE devices SET trusted = ? WHERE id = ?").bind(b.trusted ? 1 : 0, p.id).run();
+    await audit(c.env, { user_id: me.user_id, action: "admin_trust_device", target: p.id, allowed: true, detail: String(!!b.trusted) });
+    return json({ ok: true });
+  });
+
+  route("POST", "/api/admin/devices/:id/revoke", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const d = await c.env.DB.prepare("SELECT user_id FROM devices WHERE id = ?").bind(p.id).first<{ user_id: string }>();
+    if (!d) throw new HttpError(404, "device_not_found", "Không tìm thấy thiết bị");
+    await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM sessions WHERE device_id = ?").bind(p.id),
+      c.env.DB.prepare("UPDATE devices SET revoked_at = ? WHERE id = ?").bind(now(), p.id),
+    ]);
+    await c.env.HUB.get(c.env.HUB.idFromName(d.user_id)).revoke(p.id, "Thiết bị đã bị quản trị viên thu hồi");
+    await audit(c.env, { user_id: me.user_id, action: "admin_revoke_device", target: p.id, allowed: true });
+    return json({ ok: true });
+  });
+
+  // Nhóm do công ty quản lý: chỉ quản trị viên tạo, mặc định cho gửi tệp, cấm chuyển tiếp/sao chép ra ngoài.
+  route("POST", "/api/admin/groups", async (c) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ name?: string; member_ids?: string[]; allow_upload?: boolean; allow_forward_out?: boolean; allow_copy?: boolean; allow_save_file?: boolean }>(c.req);
+    const flags: Record<string, 0 | 1> = {};
+    for (const k of ["allow_upload", "allow_forward_out", "allow_copy", "allow_save_file"] as const) {
+      const v = bool01(b[k]);
+      if (v !== undefined) flags[k] = v;
+    }
+    const id = await createGroup(c, me, str(b.name, "name", 120), Array.isArray(b.member_ids) ? b.member_ids.map(String) : [], true, flags);
+    return json({ conversation_id: id });
+  });
+
+  route("GET", "/api/admin/conversations", async (c) => {
+    await requireAdmin(c.env, c.req);
+    const r = await c.env.DB.prepare(
+      `SELECT c.id, c.kind, c.name, c.managed, c.allow_upload, c.allow_forward_out, c.allow_copy, c.allow_save_file,
+              c.created_by, c.created_at, c.last_msg_at, (SELECT COUNT(*) FROM members m WHERE m.conversation_id = c.id) AS member_count
+         FROM conversations c WHERE c.kind = 'group' ORDER BY c.last_msg_at DESC LIMIT 1000`,
+    ).all();
+    return json({ conversations: r.results });
+  });
+
+  route("PATCH", "/api/admin/conversations/:id", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<Record<string, unknown>>(c.req);
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (b.name !== undefined) (sets.push("name=?"), vals.push(str(b.name, "name", 120)));
+    for (const k of ["managed", "allow_upload", "allow_forward_out", "allow_copy", "allow_save_file"]) {
+      const v = bool01(b[k]);
+      if (v !== undefined) (sets.push(`${k}=?`), vals.push(v));
+    }
+    if (!sets.length) throw new HttpError(400, "bad_field", "Không có gì để cập nhật");
+    await c.env.DB.prepare(`UPDATE conversations SET ${sets.join(",")} WHERE id = ?`).bind(...vals, p.id).run();
+    await audit(c.env, { user_id: me.user_id, action: "admin_update_conversation", conversation_id: p.id, allowed: true, detail: JSON.stringify(b) });
+    await fanoutConv(c, p.id, { type: "conversation_changed", conversation_id: p.id });
+    return json({ ok: true });
+  });
+
+  route("POST", "/api/admin/conversations/:id/members", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ user_ids?: string[]; role?: string }>(c.req);
+    const ids = (Array.isArray(b.user_ids) ? b.user_ids : []).map(String).slice(0, 2000);
+    const t = now();
+    await c.env.DB.batch(
+      ids.map((u) =>
+        c.env.DB.prepare(
+          `INSERT INTO members(conversation_id,user_id,role,joined_at,last_read_seq)
+           SELECT ?, id, ?, ?, (SELECT last_seq FROM conversations WHERE id = ?) FROM users WHERE id = ? AND status='active'
+           ON CONFLICT(conversation_id,user_id) DO UPDATE SET role = excluded.role`,
+        ).bind(p.id, b.role === "admin" ? "admin" : "member", t, p.id, u),
+      ),
+    );
+    await audit(c.env, { user_id: me.user_id, action: "admin_add_members", conversation_id: p.id, allowed: true, detail: ids.join(",") });
+    fanout(c, ids, { type: "conversation_changed", conversation_id: p.id });
+    await fanoutConv(c, p.id, { type: "conversation_changed", conversation_id: p.id });
+    return json({ ok: true });
+  });
+
+  route("GET", "/api/admin/settings", async (c) => {
+    await requireAdmin(c.env, c.req);
+    return json({ settings: await getSettings(c.env) });
+  });
+
+  route("PATCH", "/api/admin/settings", async (c) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<Record<string, unknown>>(c.req);
+    const stmts = [];
+    for (const [k, v] of Object.entries(b)) {
+      if (!SETTING_KEYS[k] || !SETTING_KEYS[k].includes(String(v))) throw new HttpError(400, "bad_field", `Giá trị không hợp lệ cho ${k}`);
+      stmts.push(c.env.DB.prepare("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(k, String(v)));
+    }
+    if (stmts.length) await c.env.DB.batch(stmts);
+    await audit(c.env, { user_id: me.user_id, action: "admin_settings", allowed: true, detail: JSON.stringify(b) });
+    return json({ settings: await getSettings(c.env) });
+  });
+
+  route("GET", "/api/admin/audit", async (c) => {
+    await requireAdmin(c.env, c.req);
+    const q = c.url.searchParams;
+    const r = await c.env.DB.prepare(
+      `SELECT a.*, u.username, u.display_name FROM audit a LEFT JOIN users u ON u.id = a.user_id
+        WHERE (?1 IS NULL OR a.user_id = ?1) AND (?2 IS NULL OR a.action = ?2) AND (?3 IS NULL OR a.allowed = ?3)
+          AND (?4 IS NULL OR a.id < ?4)
+        ORDER BY a.id DESC LIMIT ?5`,
+    )
+      .bind(q.get("user_id"), q.get("action"), q.get("allowed") === null ? null : Number(q.get("allowed")), q.get("before_id") ? Number(q.get("before_id")) : null, Math.min(500, Number(q.get("limit") ?? 100)))
+      .all();
+    return json({ audit: r.results });
+  });
+
+  // Kiểm tra quyền xem một hội thoại bất kỳ (phục vụ điều tra rò rỉ). Mỗi lần xem đều bị ghi nhật ký.
+  route("GET", "/api/admin/conversations/:id/messages", async (c, p) => {
+    const me = await requireAdmin(c.env, c.req);
+    const reason = c.url.searchParams.get("reason") ?? "";
+    if (reason.trim().length < 5) throw new HttpError(400, "reason_required", "Phải ghi lý do khi xem hội thoại của người khác");
+    await audit(c.env, { user_id: me.user_id, action: "admin_read_conversation", conversation_id: p.id, allowed: true, detail: reason });
+    const r = await c.env.DB.prepare(
+      `SELECT m.id, m.seq, m.sender_id, u.display_name AS sender_name, m.kind, m.text, m.file_id, m.forwarded_from, m.created_at, m.recalled_at
+         FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.conversation_id = ? ORDER BY m.seq DESC LIMIT 200`,
+    )
+      .bind(p.id)
+      .all();
+    return json({ messages: r.results });
+  });
+
+}

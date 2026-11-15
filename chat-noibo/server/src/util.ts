@@ -1,0 +1,105 @@
+import type { UserHub } from "./hub";
+
+export interface Env {
+  DB: D1Database;
+  FILES: R2Bucket;
+  HUB: DurableObjectNamespace<UserHub>;
+  CORS_ORIGIN: string;
+  MAX_UPLOAD_BYTES: string;
+  ADMIN_BOOTSTRAP_TOKEN?: string;
+}
+
+export class HttpError extends Error {
+  constructor(public status: number, public code: string, message?: string) {
+    super(message ?? code);
+  }
+}
+
+export const now = () => Date.now();
+
+export function newId(prefix: string): string {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return `${prefix}_${b64url(b)}`;
+}
+
+export function b64url(bytes: ArrayBuffer | Uint8Array): string {
+  const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = "";
+  for (const c of u) s += String.fromCharCode(c);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function fromB64url(s: string): Uint8Array {
+  const pad = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
+  const bin = atob(pad);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+export async function sha256Hex(data: ArrayBuffer | Uint8Array | string): Promise<string> {
+  const buf = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function json(data: unknown, status = 200, headers: HeadersInit = {}): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
+}
+
+export async function readJson<T = Record<string, unknown>>(req: Request): Promise<T> {
+  try {
+    return (await req.json()) as T;
+  } catch {
+    throw new HttpError(400, "bad_json", "Nội dung yêu cầu không phải JSON hợp lệ");
+  }
+}
+
+export function str(v: unknown, field: string, max = 4000, min = 1): string {
+  if (typeof v !== "string") throw new HttpError(400, "bad_field", `Thiếu trường ${field}`);
+  const t = v.trim();
+  if (t.length < min || t.length > max) throw new HttpError(400, "bad_field", `Trường ${field} không hợp lệ`);
+  return t;
+}
+
+export function bool01(v: unknown): 0 | 1 | undefined {
+  if (v === undefined) return undefined;
+  return v ? 1 : 0;
+}
+
+export async function audit(
+  env: Env,
+  e: {
+    user_id?: string | null;
+    device_id?: string | null;
+    action: string;
+    conversation_id?: string | null;
+    target?: string | null;
+    allowed: boolean;
+    detail?: string;
+  },
+) {
+  await env.DB.prepare(
+    "INSERT INTO audit(at,user_id,device_id,action,conversation_id,target,allowed,detail) VALUES (?,?,?,?,?,?,?,?)",
+  )
+    .bind(
+      now(),
+      e.user_id ?? null,
+      e.device_id ?? null,
+      e.action,
+      e.conversation_id ?? null,
+      e.target ?? null,
+      e.allowed ? 1 : 0,
+      e.detail ?? "",
+    )
+    .run();
+}
+
+export async function getSettings(env: Env): Promise<Record<string, string>> {
+  const r = await env.DB.prepare("SELECT key, value FROM settings").all<{ key: string; value: string }>();
+  return Object.fromEntries(r.results.map((x) => [x.key, x.value]));
+}

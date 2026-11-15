@@ -1,0 +1,35 @@
+name = "chat-noibo"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cơ sở dữ liệu tin nhắn, người dùng, nhóm, nhật ký kiểm soát.
+# Tạo bằng: npx wrangler d1 create chat_noibo --location=apac  rồi dán database_id vào đây.
+[[d1_databases]]
+binding = "DB"
+database_name = "chat_noibo"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# Kho tệp đính kèm. Tạo bằng: npx wrangler r2 bucket create chat-noibo-files
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "chat-noibo-files"
+
+# Mỗi người dùng có một "hub" giữ các kết nối WebSocket của mọi thiết bị của họ.
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "UserHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserHub"]
+
+[vars]
+# Origin được phép gọi API từ trình duyệt (chỉ dùng cho bản web thử nghiệm). Ứng dụng native không cần CORS.
+CORS_ORIGIN = "*"
+# Giới hạn kích thước một tệp tải lên (byte).
+MAX_UPLOAD_BYTES = "52428800"
+
+# Bí mật — đặt bằng: npx wrangler secret put ADMIN_BOOTSTRAP_TOKEN
+# ADMIN_BOOTSTRAP_TOKEN dùng một lần để tạo tài khoản quản trị đầu tiên.
