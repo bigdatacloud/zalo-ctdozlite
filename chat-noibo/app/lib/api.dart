@@ -244,6 +244,8 @@ class Api {
   Future<List<Map<String, dynamic>>> conversationMembers(String convId) async =>
       ((await _send('GET', '/api/conversations/$convId'))['members'] as List).cast<Map<String, dynamic>>();
 
+  Future<void> registerPushToken(String? token) => _send('POST', '/api/devices/push-token', body: {'token': token});
+
   Future<void> markRead(String convId, int seq) => _send('POST', '/api/conversations/$convId/read', body: {'seq': seq});
   Future<Message> forward(String msgId, String targetConvId) async => Message.fromJson(
       (await _send('POST', '/api/messages/$msgId/forward', body: {'conversation_id': targetConvId}))['message']);

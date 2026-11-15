@@ -7,6 +7,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api.dart';
+import 'push.dart';
 
 String currentPlatform() {
   if (kIsWeb) return 'web';
@@ -98,6 +99,7 @@ class AppState extends ChangeNotifier {
 
   /// Xóa sạch dữ liệu cục bộ: token, tin nhắn trong bộ nhớ, ngắt WebSocket.
   Future<void> _wipe(String? reason) async {
+    Push.instance.unregister();
     _closeWs();
     _reconnect?.cancel();
     await _storage.deleteAll();
@@ -115,6 +117,7 @@ class AppState extends ChangeNotifier {
   Future<void> _afterLogin() async {
     await refreshConversations();
     await refreshApprovals();
+    Push.instance.register(api);
     _connectWs();
   }
 
@@ -295,6 +298,7 @@ class AppState extends ChangeNotifier {
       c.lastMessage = m;
     }
     if (activeId == c.id && m.senderId != me?.userId) _markRead(c.id);
+    if (m.senderId != me?.userId && m.kind != 'system') DesktopAttention.flash();
     notifyListeners();
   }
 

@@ -1,6 +1,7 @@
 import { authenticate, createSession, hashPassword, Principal, validatePassword, verifyPassword } from "./auth";
 import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, isApprover, needsApproval, requireInternal } from "./policy";
 import { approvalRoutes, notifyApprovers, pendingOut } from "./approvals";
+import { pushNewMessage } from "./push";
 import { adminRoutes, sweepExpired } from "./admin";
 import { audit, Env, getSettings, HttpError, json, newId, now, readJson, sha256Hex, str } from "./util";
 
@@ -178,7 +179,10 @@ export async function insertMessage(
     ).bind(convId, convId, senderId),
   ]);
   const out = msgOut((await loadMsg(c.env, id))!);
-  await fanoutConv(c, convId, { type: "message", message: out });
+  const ids = await memberIds(c.env, convId);
+  fanout(c, ids, { type: "message", message: out });
+  const conv = await c.env.DB.prepare("SELECT kind, name FROM conversations WHERE id = ?").bind(convId).first<{ kind: string; name: string }>();
+  c.exec.waitUntil(pushNewMessage(c.env, out, conv!, ids).catch((e) => console.error("push", e)));
   return out;
 }
 
@@ -289,6 +293,18 @@ route("GET", "/api/me", async (c) => {
   const me = await authenticate(c.env, c.req);
   c.exec.waitUntil(c.env.DB.prepare("UPDATE devices SET last_seen=? WHERE id=?").bind(now(), me.device_id).run());
   return json({ me });
+});
+
+// Ứng dụng điện thoại đăng ký mã nhận thông báo (FCM token) của thiết bị đang đăng nhập.
+route("POST", "/api/devices/push-token", async (c) => {
+  const me = await authenticate(c.env, c.req);
+  const b = await readJson<{ token?: string | null }>(c.req);
+  const token = b.token ? str(b.token, "token", 4096) : null;
+  const stmts = [c.env.DB.prepare("UPDATE devices SET push_token = ? WHERE id = ?").bind(token, me.device_id)];
+  // Cùng một máy đăng nhập lại tạo thiết bị mới: gỡ token khỏi bản ghi cũ để không nhận trùng.
+  if (token) stmts.push(c.env.DB.prepare("UPDATE devices SET push_token = NULL WHERE push_token = ? AND id != ?").bind(token, me.device_id));
+  await c.env.DB.batch(stmts);
+  return json({ ok: true });
 });
 
 route("GET", "/api/ws", async (c) => {

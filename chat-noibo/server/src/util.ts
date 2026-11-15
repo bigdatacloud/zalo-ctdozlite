@@ -7,6 +7,10 @@ export interface Env {
   CORS_ORIGIN: string;
   MAX_UPLOAD_BYTES: string;
   ADMIN_BOOTSTRAP_TOKEN?: string;
+  /** Tệp JSON khóa tài khoản dịch vụ Firebase (secret). Không đặt = tắt thông báo đẩy. */
+  FCM_SERVICE_ACCOUNT?: string;
+  /** Chỉ dùng khi kiểm thử. */
+  FCM_API_BASE?: string;
 }
 
 export class HttpError extends Error {

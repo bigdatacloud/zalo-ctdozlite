@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'dart:async';
+
 import '../api.dart';
+import '../push.dart';
 import '../main.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -18,6 +21,31 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _filter = TextEditingController();
+  StreamSubscription<String>? _pushOpen;
+
+  @override
+  void initState() {
+    super.initState();
+    // Bấm vào thông báo đẩy: mở đúng hội thoại.
+    void go(String id) {
+      if (!mounted) return;
+      Navigator.of(context).popUntil((r) => r.isFirst);
+      _openConv(id, MediaQuery.sizeOf(context).width >= kSplitBreakpoint);
+    }
+
+    _pushOpen = Push.instance.openRequests.stream.listen(go);
+    final early = Push.instance.pendingOpen;
+    if (early != null) {
+      Push.instance.pendingOpen = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => go(early));
+    }
+  }
+
+  @override
+  void dispose() {
+    _pushOpen?.cancel();
+    super.dispose();
+  }
 
   Future<void> _openConv(String id, bool split) async {
     final s = AppScope.read(context);

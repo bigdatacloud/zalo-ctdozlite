@@ -2,6 +2,8 @@
 
 #include <optional>
 
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -25,6 +27,27 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+
+  window_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "chat_noibo/window",
+      &flutter::StandardMethodCodec::GetInstance());
+  window_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() == "flash") {
+          HWND hwnd = GetHandle();
+          if (hwnd != nullptr && GetForegroundWindow() != hwnd) {
+            FLASHWINFO info{};
+            info.cbSize = sizeof(FLASHWINFO);
+            info.hwnd = hwnd;
+            info.dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG;  // nháy tới khi người dùng mở cửa sổ
+            FlashWindowEx(&info);
+          }
+          result->Success();
+        } else {
+          result->NotImplemented();
+        }
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   // Loại cửa sổ khỏi mọi phần mềm chụp/quay màn hình (Snipping Tool, PrintScreen, OBS,
@@ -47,6 +70,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  window_channel_ = nullptr;  // trước engine, vì kênh giữ con trỏ messenger của engine
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

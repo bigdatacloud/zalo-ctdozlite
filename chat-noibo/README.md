@@ -103,6 +103,24 @@ Sau đó vào `https://chat.congty.vn/admin/` để làm mọi việc còn lại
 
 Chạy thử trên máy: `npm run db:migrate:local && npm run dev`, rồi `node scripts/seed-demo.mjs` để có dữ liệu mẫu (đăng nhập `nv001` / `matkhau123`).
 
+## Thông báo đẩy (Firebase)
+
+Máy chủ vẫn là Cloudflare. Firebase chỉ chuyển thông báo tới điện thoại: Android qua dịch vụ Google, iPhone qua APNs của Apple (bắt buộc với mọi ứng dụng iPhone, Firebase chỉ là cửa trung gian). Phần gửi thông báo của Firebase miễn phí.
+
+**Nội dung tin nhắn không bao giờ đi qua Google/Apple.** Thông báo chỉ có tên người gửi và tên nhóm ("Xưởng 1 - Sản xuất: Nguyễn Văn An đã gửi một tệp"), hoặc chỉ "Bạn có tin nhắn mới" nếu IT chọn ở trang quản trị → Chính sách. Mở thông báo thì app tự tải nội dung từ máy chủ công ty.
+
+Ngoài tin nhắn, còn có thông báo "Tệp chờ bạn duyệt" cho người duyệt và "Tệp đã được duyệt / bị từ chối" cho người gửi. Thông báo cùng một hội thoại thay thế nhau, không xếp chồng. Windows không dùng Firebase: app đang chạy thì nháy biểu tượng trên thanh tác vụ khi có tin mới.
+
+Cài đặt (một lần):
+1. [console.firebase.google.com](https://console.firebase.google.com) → tạo dự án (không cần Google Analytics).
+2. Thêm ứng dụng **Android** với package `vn.noibo.chat_noibo` và ứng dụng **iOS** với bundle `vn.noibo.chatNoibo`. Không cần tải `google-services.json` hay `GoogleService-Info.plist`. Ghi lại *Project ID*, *Sender ID*, *Web API Key* và *App ID* của từng ứng dụng.
+3. **iPhone**: Apple Developer → Keys → tạo khóa APNs (.p8) → tải lên Firebase (Project settings → Cloud Messaging → Apple app configuration). Trong Xcode: Runner → Signing & Capabilities → **+ Push Notifications**.
+4. Máy chủ: Project settings → Service accounts → *Generate new private key*, rồi
+   `npx wrangler secret put FCM_SERVICE_ACCOUNT < khoa-tai-khoan-dich-vu.json`. Xóa tệp khóa sau khi nạp.
+5. Đặt các biến kho GitHub `FCM_PROJECT_ID`, `FCM_SENDER_ID`, `FCM_API_KEY`, `FCM_APP_ID_ANDROID`, `FCM_APP_ID_IOS` (Settings → Variables) để CI build app có thông báo. Build tay thì thêm các `--dart-define` tương ứng.
+
+Đổi `vn.noibo.*` sang tên miền công ty **trước** lần phát hành đầu tiên; sau đó không đổi được nữa. Máy Huawei đời mới không có dịch vụ Google nên sẽ không nhận được thông báo khi app đang tắt.
+
 ## Build ứng dụng
 
 Địa chỉ máy chủ được gắn cứng lúc build, người dùng không đổi được:
@@ -123,7 +141,8 @@ Phát hành:
 
 ## Giới hạn và rủi ro đã biết
 
-- **Chưa có thông báo đẩy** (FCM/APNs). Điện thoại chỉ nhận tin khi app đang mở. Đây là việc cần làm tiếp theo, và chỉ nên đẩy thông báo không kèm nội dung để nội dung không đi qua máy chủ Google/Apple.
+- Thông báo đẩy đã có mã nhưng chỉ chạy khi cấu hình Firebase/Apple (mục trên). Đã kiểm thử với máy chủ FCM giả lập, chưa thử trên điện thoại thật.
+- Nhóm rất lớn (vài trăm người): mỗi tin gửi một thông báo cho từng thiết bị (FCM không còn gửi theo lô). Nếu thấy chậm thì chuyển sang Cloudflare Queues.
 - Chưa có: gọi thoại/video, trả lời trích dẫn, cảm xúc, tìm kiếm tin nhắn, xem PDF/Office trong app (hiện chỉ xem được ảnh và văn bản; tệp loại khác chỉ mở được ở nơi có quyền lưu).
 - Chưa tự gửi email thông tin đăng nhập cho đối tác: trang quản trị hiện mật khẩu một lần để IT gửi thủ công.
 - **Dung lượng D1**: mỗi cơ sở dữ liệu D1 có giới hạn dung lượng (10 GB tại thời điểm viết, cần kiểm tra lại). Ước tính khoảng 0,4 KB/tin kể cả chỉ mục: 500 người × 200 tin/ngày ≈ 40 MB/ngày ≈ 14 GB/năm. Sẽ chạm giới hạn trước một năm nếu không lưu trữ tin cũ ra R2 hoặc chia DB theo năm. Phải làm trước khi vượt khoảng 70% giới hạn.

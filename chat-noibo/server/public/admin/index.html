@@ -484,7 +484,7 @@ async function renderDevices(m) {
     const list = state.devices.filter((d) => (showRev || !d.revoked_at) && (!q || (d.display_name + d.username).toLowerCase().includes(q)));
     $("#dt").innerHTML = list.length ? list.map((d) => `<tr>
       <td>${esc(d.display_name)} <span class="muted small">${esc(d.username)}</span></td>
-      <td>${PLAT[d.platform] || d.platform} <span class="muted small">${esc(d.name)}</span></td>
+      <td>${PLAT[d.platform] || d.platform} <span class="muted small">${esc(d.name)}</span>${d.has_push ? ` <span class="chip ok" title="Nhận được thông báo đẩy">🔔</span>` : ""}</td>
       <td class="small">${fmtDate(d.created_at)}</td><td class="small">${fmtDate(d.last_seen)}</td>
       <td>${d.revoked_at ? "" : `<input type="checkbox" data-tr="${d.id}" ${d.trusted ? "checked" : ""} style="width:auto">`}</td>
       <td>${d.revoked_at ? `<span class="chip bad">Đã thu hồi ${fmtDay(d.revoked_at)}</span>` : `<button class="small danger" data-rv="${d.id}">Thu hồi</button>`}</td></tr>`).join("")
@@ -506,6 +506,8 @@ async function renderSettings(m) {
     <label>Gửi tệp trong tin nhắn 1-1<select data-k="dm_upload"><option value="0">Cấm (khuyến nghị)</option><option value="1">Cho phép</option></select></label>
     <label>Nhân viên tự tạo nhóm thường<select data-k="members_can_create_groups"><option value="1">Cho phép (nhóm thường luôn bị cấm gửi tệp)</option><option value="0">Chỉ quản trị viên tạo nhóm</option></select></label>
     <label>Điện thoại cá nhân mở tệp trong nhóm nội bộ<select data-k="mobile_untrusted_files"><option value="view">Chỉ xem trong ứng dụng</option><option value="deny">Cấm mở</option><option value="allow">Theo quyền của nhóm</option></select></label>
+    <label>Nội dung thông báo trên màn hình khóa điện thoại<select data-k="push_content"><option value="sender">Tên người gửi và tên nhóm (không kèm nội dung tin)</option><option value="none">Chỉ "Bạn có tin nhắn mới"</option></select></label>
+    <div class="muted small">Thông báo đi qua máy chủ Google (Android) và Apple (iPhone). Nội dung tin nhắn không bao giờ được gửi qua đó.</div>
     <div class="muted small">Nhóm có người bên ngoài luôn áp dụng đúng quyền của nhóm (đối tác cần tải được đơn hàng, bản vẽ gửi cho họ).</div>
   </div>`;
   m.querySelectorAll("select").forEach((el) => { el.value = s[el.dataset.k];

@@ -3,7 +3,9 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { generateKeyPairSync, createVerify } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +13,36 @@ const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const state = mkdtempSync(join(tmpdir(), "chat-noibo-"));
 let proc;
+
+// Máy chủ FCM giả: cấp access token (sau khi kiểm chữ ký JWT RS256) và ghi lại thông báo gửi đi.
+const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const fcm = { sent: [], jwtOk: 0, jwtBad: 0 };
+const mock = createServer((req, res) => {
+  let body = "";
+  req.on("data", (d) => (body += d));
+  req.on("end", () => {
+    if (req.url === "/token") {
+      const jwt = new URLSearchParams(body).get("assertion") ?? "";
+      const [h, p, sig] = jwt.split(".");
+      const ok = createVerify("RSA-SHA256").update(`${h}.${p}`).verify(publicKey, Buffer.from(sig, "base64url"));
+      ok ? fcm.jwtOk++ : fcm.jwtBad++;
+      res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
+      return res.end(JSON.stringify(ok ? { access_token: "fake-access", expires_in: 3600 } : { error: "bad jwt" }));
+    }
+    if (req.url === "/v1/projects/test-proj/messages:send") {
+      const m = JSON.parse(body).message;
+      if (req.headers.authorization !== "Bearer fake-access") { res.writeHead(401); return res.end(); }
+      if (m.token.startsWith("bad-")) {
+        res.writeHead(404, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { status: "NOT_FOUND", details: [{ errorCode: "UNREGISTERED" }] } }));
+      }
+      fcm.sent.push(m);
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ name: "projects/test-proj/messages/1" }));
+    }
+    res.writeHead(404); res.end();
+  });
+});
 
 async function api(path, { token, method = "GET", body, headers = {}, raw } = {}) {
   const h = { ...headers };
@@ -28,8 +60,17 @@ async function api(path, { token, method = "GET", body, headers = {}, raw } = {}
 }
 
 before(async () => {
+  await new Promise((r) => mock.listen(0, "127.0.0.1", r));
+  const mockBase = `http://127.0.0.1:${mock.address().port}`;
+  const sa = {
+    project_id: "test-proj",
+    client_email: "push@test-proj.iam.gserviceaccount.com",
+    private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
+    token_uri: `${mockBase}/token`,
+  };
+  writeFileSync(join(state, "test.env"), `ADMIN_BOOTSTRAP_TOKEN=t0ken-khoi-tao\nFCM_API_BASE=${mockBase}\nFCM_SERVICE_ACCOUNT='${JSON.stringify(sa)}'\n`);
   execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "chat_noibo", "--local", "--persist-to", state], { stdio: "ignore" });
-  proc = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", state, "--var", "ADMIN_BOOTSTRAP_TOKEN:t0ken-khoi-tao"], {
+  proc = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", state, "--env-file", join(state, "test.env")], {
     stdio: "ignore",
     detached: true,
   });
@@ -44,6 +85,7 @@ before(async () => {
 });
 
 after(() => {
+  mock.close();
   try {
     process.kill(-proc.pid, "SIGTERM");
   } catch {}
@@ -461,4 +503,43 @@ test("duyệt tệp gửi ra ngoài: đối tác không thấy gì cho tới khi
   r = await api("/api/admin/audit?limit=300", { token: ctx.admin });
   const acts = r.data.audit.map((a) => a.action);
   for (const a of ["upload_pending", "approve_external", "reject_external", "cancel_external", "approval_preview"]) assert.ok(acts.includes(a), a);
+});
+
+test("thông báo đẩy: không bao giờ chứa nội dung tin nhắn", async () => {
+  const wait = async (pred) => { for (let i = 0; i < 50 && !pred(); i++) await new Promise((r) => setTimeout(r, 100)); };
+  let r = await api("/api/devices/push-token", { token: ctx.binh, method: "POST", body: { token: "tok-binh" } });
+  assert.equal(r.status, 200);
+  // Thiết bị thứ hai của Bình có token đã hết hiệu lực
+  r = await api("/api/auth/login", { method: "POST", body: { username: "nv002", password: "matkhau123", platform: "ios" } });
+  const binh2 = r.data.token;
+  await api("/api/devices/push-token", { token: binh2, method: "POST", body: { token: "bad-ios" } });
+
+  fcm.sent.length = 0;
+  await api(`/api/conversations/${ctx.dm}/messages`, { token: ctx.an, method: "POST", body: { text: "Mật khẩu kho là 1234" } });
+  await wait(() => fcm.sent.length >= 1);
+  assert.equal(fcm.sent.length, 1, "chỉ gửi tới người nhận, không gửi cho người gửi");
+  const m = fcm.sent[0];
+  assert.equal(m.token, "tok-binh");
+  assert.equal(m.notification.title, "Nguyễn Văn An");
+  assert.ok(!JSON.stringify(m).includes("1234"), "nội dung tin không được đi qua Google/Apple");
+  assert.equal(m.data.conversation_id, ctx.dm);
+  assert.ok(fcm.jwtOk >= 1 && fcm.jwtBad === 0, "JWT ký RS256 hợp lệ");
+
+  // Token hỏng đã bị gỡ: lần sau chỉ còn một lượt gửi, không thử lại bad-ios
+  fcm.sent.length = 0;
+  await api("/api/admin/settings", { token: ctx.admin, method: "PATCH", body: { push_content: "none" } });
+  await api(`/api/conversations/${ctx.dm}/messages`, { token: ctx.an, method: "POST", body: { text: "Lần 2" } });
+  await wait(() => fcm.sent.length >= 1);
+  assert.equal(fcm.sent[0].notification.body, "Bạn có tin nhắn mới");
+  assert.equal(fcm.sent[0].notification.title, "Chat Nội Bộ");
+  r = await api("/api/admin/devices", { token: ctx.admin });
+  assert.ok(!r.data.devices.some((d) => "push_token" in d), "không lộ push token ra trang quản trị");
+  assert.equal(r.data.devices.find((d) => d.username === "nv002" && d.platform === "ios").has_push, 0, "token hỏng đã bị gỡ");
+
+  // Đăng xuất thì không nhận thông báo nữa
+  await api("/api/auth/logout", { token: ctx.binh, method: "POST" });
+  fcm.sent.length = 0;
+  await api(`/api/conversations/${ctx.dm}/messages`, { token: ctx.an, method: "POST", body: { text: "Lần 3" } });
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(fcm.sent.length, 0);
 });

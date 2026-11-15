@@ -33,6 +33,7 @@ const SETTING_KEYS: Record<string, string[]> = {
   dm_upload: ["0", "1"],
   members_can_create_groups: ["0", "1"],
   mobile_untrusted_files: ["allow", "view", "deny"],
+  push_content: ["none", "sender"],
 };
 
 export function adminRoutes(route: Route) {
@@ -154,7 +155,9 @@ export function adminRoutes(route: Route) {
     await requireAdmin(c.env, c.req);
     const uid = c.url.searchParams.get("user_id");
     const r = await c.env.DB.prepare(
-      `SELECT d.*, u.username, u.display_name FROM devices d JOIN users u ON u.id = d.user_id
+      `SELECT d.id, d.user_id, d.platform, d.name, d.trusted, d.created_at, d.last_seen, d.revoked_at,
+              (d.push_token IS NOT NULL) AS has_push, u.username, u.display_name
+         FROM devices d JOIN users u ON u.id = d.user_id
         WHERE (? IS NULL OR d.user_id = ?) ORDER BY d.last_seen DESC LIMIT 500`,
     )
       .bind(uid, uid)

@@ -8,6 +8,7 @@ import { authenticate, Principal } from "./auth";
 import type { Ctx, ConvRow, Handler } from "./index";
 import { fanout, insertMessage } from "./index";
 import { isApprover } from "./policy";
+import { pushToUsers } from "./push";
 import { audit, Env, HttpError, json, now, readJson } from "./util";
 
 type Route = (method: string, path: string, h: Handler) => void;
@@ -88,8 +89,32 @@ async function approverIds(env: Env, convId: string): Promise<string[]> {
 }
 
 export async function notifyApprovers(c: Ctx, convId: string, event: unknown, alsoUserIds: string[] = []) {
-  const ids = new Set([...(await approverIds(c.env, convId)), ...alsoUserIds]);
+  const approvers = await approverIds(c.env, convId);
+  const ids = new Set([...approvers, ...alsoUserIds]);
   fanout(c, [...ids], event);
+  // Thông báo đẩy: người duyệt khi có tệp mới chờ; người gửi khi có quyết định.
+  const a = (event as { approval?: { status: string; sender_id: string; conversation_name: string; organization: string } | null }).approval;
+  if (!a) return;
+  const data = { type: "approval", conversation_id: convId };
+  if (a.status === "pending") {
+    c.exec.waitUntil(
+      pushToUsers(c.env, approvers.filter((u) => u !== a.sender_id), {
+        title: "Tệp chờ bạn duyệt",
+        body: `Gửi ra ${a.organization} · ${a.conversation_name}`,
+        data,
+        collapse: `approval-${convId}`,
+      }).catch((e) => console.error("push", e)),
+    );
+  } else if (a.status === "approved" || a.status === "rejected") {
+    c.exec.waitUntil(
+      pushToUsers(c.env, [a.sender_id], {
+        title: a.status === "approved" ? "Tệp đã được duyệt" : "Tệp bị từ chối",
+        body: a.conversation_name,
+        data,
+        collapse: `approval-${convId}`,
+      }).catch((e) => console.error("push", e)),
+    );
+  }
 }
 
 async function requireApproverOf(env: Env, me: Principal, convId: string) {
