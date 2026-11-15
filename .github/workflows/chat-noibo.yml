@@ -1,0 +1,67 @@
+name: Chat Nội Bộ (server + Windows / Android / iOS)
+
+on:
+  push:
+    paths: ["chat-noibo/**", ".github/workflows/chat-noibo.yml"]
+  pull_request:
+    paths: ["chat-noibo/**", ".github/workflows/chat-noibo.yml"]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.50.0"
+  # Đặt biến kho (Settings → Variables) CHAT_API_BASE = https://chat.<tên-miền-công-ty>
+  API_BASE: ${{ vars.CHAT_API_BASE || 'http://127.0.0.1:8787' }}
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: chat-noibo/server } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  windows:
+    runs-on: windows-latest
+    defaults: { run: { working-directory: chat-noibo/app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable }
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter build windows --release --dart-define=API_BASE=${{ env.API_BASE }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chat-noibo-windows-x64
+          path: chat-noibo/app/build/windows/x64/runner/Release/
+
+  android:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: chat-noibo/app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable }
+      - run: flutter pub get
+      - run: flutter build apk --release --dart-define=API_BASE=${{ env.API_BASE }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chat-noibo-android-apk
+          path: chat-noibo/app/build/app/outputs/flutter-apk/app-release.apk
+
+  ios:
+    runs-on: macos-latest
+    defaults: { run: { working-directory: chat-noibo/app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable }
+      - run: flutter pub get
+      # Bản chưa ký: chứng minh mã nguồn build được. Phát hành thật cần chứng chỉ Apple Developer (xem README).
+      - run: flutter build ios --release --no-codesign --dart-define=API_BASE=${{ env.API_BASE }}
