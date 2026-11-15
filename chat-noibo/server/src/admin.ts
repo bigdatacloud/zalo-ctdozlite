@@ -35,6 +35,7 @@ const SETTING_KEYS: Record<string, string[]> = {
   members_can_create_groups: ["0", "1"],
   mobile_untrusted_files: ["allow", "view", "deny"],
   push_content: ["none", "sender"],
+  calls_enabled: ["0", "1"],
   archive_after_days: ["90", "180", "365", "730"],
   audit_keep_days: ["365", "730", "1095", "1825"],
 };

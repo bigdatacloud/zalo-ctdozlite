@@ -105,6 +105,25 @@ Sau đó vào `https://chat.eco-tech.work/admin/` để làm mọi việc còn l
 
 Chạy thử trên máy: `npm run db:migrate:local && npm run dev`, rồi `node scripts/seed-demo.mjs` để có dữ liệu mẫu (đăng nhập `nv001` / `matkhau123`).
 
+## Gọi thoại
+
+Gọi thoại 1-1 giữa nhân viên, bấm biểu tượng điện thoại trong chat 1-1. Âm thanh dùng WebRTC, đi thẳng giữa hai máy. Máy chủ chỉ giữ trạng thái cuộc gọi và chuyển tín hiệu bắt tay, **không ghi âm**. Nhật ký ghi ai gọi ai, lúc nào, bao lâu. Sau mỗi cuộc gọi, chat 1-1 có dòng "📞 Cuộc gọi thoại · 3 phút 12 giây", "Cuộc gọi nhỡ" hoặc "đã từ chối".
+
+- Người nhận đổ chuông trên mọi thiết bị đang đăng nhập; bấm Nghe ở máy nào thì các máy khác tắt chuông.
+- Trong lúc gọi, mỗi máy gửi nhịp "còn sống" mỗi 15 giây. Máy tắt đột ngột hoặc mất mạng thì máy chủ tự kết thúc sau 45 giây, người kia không bị kẹt ở trạng thái "đang bận".
+- Có nút tắt mic, chuyển loa ngoài (điện thoại) và kết thúc. Chuông và tiếng chờ là âm tự tạo, không dùng tệp có bản quyền.
+- IT bật/tắt ở trang quản trị → Chính sách. Người bên ngoài không gọi được.
+
+**TURN (cần cho mạng 4G):** nhà mạng di động dùng NAT nhiều tầng, hai điện thoại thường không nối thẳng được với nhau. Khi đó âm thanh phải đi vòng qua máy chủ TURN.
+1. Cloudflare dashboard → Realtime → TURN → tạo khóa.
+2. `npx wrangler secret put TURN_KEY_ID` và `npx wrangler secret put TURN_KEY_API_TOKEN`.
+
+Chưa có khóa thì chỉ dùng STUN: gọi được trong cùng mạng Wi-Fi công ty và phần lớn mạng gia đình, nhưng **4G sẽ hay lỗi** ("Không kết nối được, cần cấu hình TURN"). TURN tính tiền theo lưu lượng. Một cuộc gọi thoại khoảng 40–50 kbit/s mỗi chiều, tức khoảng 20 MB/giờ, và chỉ những cuộc gọi không đi thẳng được mới qua TURN.
+
+**Chưa có:**
+- Cuộc gọi đến khi app đang tắt hẳn: hiện là thông báo "Cuộc gọi đến", bấm vào thì mở app và đổ chuông nếu người gọi còn chờ (60 giây). Chưa có màn hình gọi toàn màn hình kiểu cuộc gọi thường (Android ConnectionService, iPhone CallKit/PushKit).
+- Gọi nhóm (cần máy chủ SFU, ví dụ Cloudflare Realtime SFU) và gọi video.
+
 ## Dung lượng và quy mô
 
 - **Tin nhắn**: D1 `chat_noibo` (tối đa 10 GB). Hằng đêm 02:17, tin chữ cũ hơn 180 ngày (chỉnh được 90 ngày–2 năm) được nén gzip theo hội thoại + tháng, cất vào R2 rồi xóa khỏi D1. Người dùng cuộn lên vẫn thấy liền mạch: máy chủ tự ghép D1 + R2. Tin có tệp được giữ lại trong D1.

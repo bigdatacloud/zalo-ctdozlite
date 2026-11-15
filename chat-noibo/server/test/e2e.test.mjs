@@ -68,7 +68,7 @@ before(async () => {
     private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
     token_uri: `${mockBase}/token`,
   };
-  writeFileSync(join(state, "test.env"), `ADMIN_BOOTSTRAP_TOKEN=t0ken-khoi-tao\nFCM_API_BASE=${mockBase}\nFCM_SERVICE_ACCOUNT='${JSON.stringify(sa)}'\n`);
+  writeFileSync(join(state, "test.env"), `ADMIN_BOOTSTRAP_TOKEN=t0ken-khoi-tao\nCALL_STALE_MS=4000\nFCM_API_BASE=${mockBase}\nFCM_SERVICE_ACCOUNT='${JSON.stringify(sa)}'\n`);
   for (const db of ["chat_noibo", "chat_noibo_audit"])
     execFileSync("npx", ["wrangler", "d1", "migrations", "apply", db, "--local", "--persist-to", state], { stdio: "ignore" });
   proc = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", state, "--env-file", join(state, "test.env")], {
@@ -619,4 +619,97 @@ test("lưu trữ tin cũ ra R2: lịch sử vẫn liền mạch, số thứ tự
   const { gunzipSync } = await import("node:zlib");
   const lines = gunzipSync(Buffer.from(dl.data)).toString("utf8").split("\n");
   assert.ok(JSON.parse(lines[0]).action, "nhật ký lưu trữ đọc được");
+});
+
+test("gọi thoại 1-1: đổ chuông, nghe máy, chuyển tín hiệu đúng thiết bị, kết thúc", async () => {
+  const wsOf = async (token) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/ws?token=${token}`);
+    const ev = [];
+    await new Promise((res) => { ws.onmessage = (e) => { const m = JSON.parse(e.data); ev.push(m); if (m.type === "hello") res(); }; });
+    return { ws, ev };
+  };
+  const wait = async (pred) => { for (let i = 0; i < 50 && !pred(); i++) await new Promise((r) => setTimeout(r, 100)); };
+  // Bình đã đăng xuất ở bài trước: đăng nhập lại trên hai máy
+  const b1 = (await api("/api/auth/login", { method: "POST", body: { username: "nv002", password: "matkhau123", platform: "android" } })).data;
+  const b2 = (await api("/api/auth/login", { method: "POST", body: { username: "nv002", password: "matkhau123", platform: "windows" } })).data;
+  const an = await wsOf(ctx.an), binh1 = await wsOf(b1.token), binh2 = await wsOf(b2.token);
+
+  let r = await api("/api/calls/ice-servers", { token: ctx.an });
+  assert.equal(r.data.iceServers[0].urls[0], "stun:stun.cloudflare.com:3478");
+
+  r = await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.managed } });
+  assert.equal(r.status, 403, "chỉ gọi trong chat 1-1");
+
+  r = await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.dm } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const call = r.data.call;
+  assert.equal(call.state, "ringing");
+  await wait(() => binh1.ev.some((e) => e.type === "call" && e.event === "ringing") && binh2.ev.some((e) => e.type === "call" && e.event === "ringing"));
+  assert.ok(binh2.ev.some((e) => e.event === "ringing" && e.call.id === call.id), "đổ chuông trên mọi thiết bị của người nhận");
+
+  r = await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.dm } });
+  assert.equal(r.status, 409, "đang trong cuộc gọi thì bận");
+
+  assert.equal((await api(`/api/calls/${call.id}/signal`, { token: ctx.an, method: "POST", body: { kind: "offer", data: {} } })).status, 409, "chưa nghe máy thì chưa trao đổi tín hiệu");
+  assert.equal((await api(`/api/calls/${call.id}/accept`, { token: ctx.an, method: "POST" })).status, 403, "người gọi không tự nghe");
+
+  r = await api(`/api/calls/${call.id}/accept`, { token: b1.token, method: "POST" });
+  assert.equal(r.status, 200);
+  assert.equal((await api(`/api/calls/${call.id}/accept`, { token: b2.token, method: "POST" })).status, 409, "máy thứ hai nghe sau thì bị từ chối");
+  await wait(() => binh2.ev.some((e) => e.event === "accepted"));
+  assert.equal(binh2.ev.find((e) => e.event === "accepted").call.callee_device, b1.me.device_id, "máy kia biết đã nghe ở thiết bị khác để tắt chuông");
+
+  await api(`/api/calls/${call.id}/signal`, { token: ctx.an, method: "POST", body: { kind: "offer", data: { type: "offer", sdp: "v=0 fake" } } });
+  await wait(() => binh1.ev.some((e) => e.event === "signal"));
+  const sig = binh1.ev.find((e) => e.event === "signal");
+  assert.equal(sig.kind, "offer");
+  assert.equal(sig.to_device, b1.me.device_id);
+  assert.equal(sig.data.sdp, "v=0 fake");
+  assert.equal((await api(`/api/calls/${call.id}/signal`, { token: b2.token, method: "POST", body: { kind: "answer", data: {} } })).status, 403, "máy không nghe không được gửi tín hiệu");
+  await api(`/api/calls/${call.id}/signal`, { token: b1.token, method: "POST", body: { kind: "answer", data: { type: "answer", sdp: "v=0 ans" } } });
+  await wait(() => an.ev.some((e) => e.event === "signal"));
+  assert.equal(an.ev.find((e) => e.event === "signal").data.sdp, "v=0 ans");
+
+  await new Promise((res) => setTimeout(res, 1100));
+  r = await api(`/api/calls/${call.id}/end`, { token: b1.token, method: "POST", body: { reason: "hangup" } });
+  assert.equal(r.data.call.state, "ended");
+  await wait(() => an.ev.some((e) => e.event === "ended"));
+  r = await api(`/api/conversations/${ctx.dm}/messages?limit=1`, { token: ctx.an });
+  assert.match(r.data.messages[0].text, /Cuộc gọi thoại · \d+ giây/);
+
+  // Từ chối
+  r = await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.dm } });
+  await api(`/api/calls/${r.data.call.id}/end`, { token: b2.token, method: "POST", body: { reason: "reject" } });
+  r = await api(`/api/conversations/${ctx.dm}/messages?limit=1`, { token: ctx.an });
+  assert.match(r.data.messages[0].text, /đã từ chối cuộc gọi/);
+
+  // Tắt tính năng
+  await api("/api/admin/settings", { token: ctx.admin, method: "PATCH", body: { calls_enabled: "0" } });
+  assert.equal((await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.dm } })).status, 403);
+  await api("/api/admin/settings", { token: ctx.admin, method: "PATCH", body: { calls_enabled: "1" } });
+
+  r = await api("/api/admin/audit?action=call_end", { token: ctx.admin });
+  assert.ok(r.data.audit.some((a) => a.detail.includes("hangup")));
+  for (const x of [an, binh1, binh2]) x.ws.close();
+});
+
+test("cuộc gọi tự kết thúc khi một máy rớt mạng (không còn gửi nhịp)", async () => {
+  const b = (await api("/api/auth/login", { method: "POST", body: { username: "nv002", password: "matkhau123", platform: "android" } })).data;
+  let r = await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.dm } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const id = r.data.call.id;
+  await api(`/api/calls/${id}/accept`, { token: b.token, method: "POST" });
+  // Bình vẫn gửi nhịp, An thì im (máy tắt đột ngột)
+  for (let i = 0; i < 5; i++) {
+    await new Promise((res) => setTimeout(res, 1000));
+    r = await api(`/api/calls/${id}/heartbeat`, { token: b.token, method: "POST" });
+  }
+  assert.equal(r.data.call.state, "ended");
+  assert.equal(r.data.call.end_reason, "dropped");
+  r = await api(`/api/conversations/${ctx.dm}/messages?limit=1`, { token: ctx.an });
+  assert.match(r.data.messages[0].text, /mất kết nối/);
+  // Không còn bị coi là đang bận
+  r = await api("/api/calls", { token: ctx.an, method: "POST", body: { conversation_id: ctx.dm } });
+  assert.equal(r.status, 200);
+  await api(`/api/calls/${r.data.call.id}/end`, { token: ctx.an, method: "POST", body: { reason: "cancel" } });
 });

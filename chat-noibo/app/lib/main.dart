@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'store.dart';
 import 'theme.dart';
+import 'ui/call_screen.dart';
 import 'ui/home.dart';
 import 'ui/login.dart';
 import 'ui/widgets.dart';
@@ -27,6 +28,7 @@ class ChatApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
+      builder: (context, child) => CallLayer(child: child ?? const SizedBox()),
       home: const PrivacyShield(child: _Gate()),
     );
   }

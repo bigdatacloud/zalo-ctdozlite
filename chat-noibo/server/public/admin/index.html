@@ -508,6 +508,8 @@ async function renderSettings(m) {
     <label>Nhân viên tự tạo nhóm thường<select data-k="members_can_create_groups"><option value="1">Cho phép (nhóm thường luôn bị cấm gửi tệp)</option><option value="0">Chỉ quản trị viên tạo nhóm</option></select></label>
     <label>Điện thoại cá nhân mở tệp trong nhóm nội bộ<select data-k="mobile_untrusted_files"><option value="view">Chỉ xem trong ứng dụng</option><option value="deny">Cấm mở</option><option value="allow">Theo quyền của nhóm</option></select></label>
     <label>Nội dung thông báo trên màn hình khóa điện thoại<select data-k="push_content"><option value="sender">Tên người gửi và tên nhóm (không kèm nội dung tin)</option><option value="none">Chỉ "Bạn có tin nhắn mới"</option></select></label>
+    <label>Gọi thoại 1-1 giữa nhân viên<select data-k="calls_enabled"><option value="1">Bật</option><option value="0">Tắt</option></select></label>
+    <div class="muted small">Không ghi âm. Nhật ký chỉ ghi ai gọi ai, lúc nào, bao lâu. Người bên ngoài không gọi được.</div>
     <label>Chuyển tin chữ cũ sang kho lưu trữ sau<select data-k="archive_after_days"><option value="90">90 ngày</option><option value="180">180 ngày</option><option value="365">1 năm</option><option value="730">2 năm</option></select></label>
     <div class="muted small">Tin đã lưu trữ vẫn xem được trong ứng dụng khi cuộn lên. Việc lưu trữ giúp cơ sở dữ liệu không chạm giới hạn 10 GB. Chạy tự động lúc 02:17 hằng đêm.</div>
     <label>Giữ nhật ký kiểm soát trực tuyến trong<select data-k="audit_keep_days"><option value="365">1 năm</option><option value="730">2 năm</option><option value="1095">3 năm</option><option value="1825">5 năm</option></select></label>
@@ -534,7 +536,7 @@ const ACT = {
   admin_add_members: "Thêm thành viên (QT)", admin_remove_member: "Xóa thành viên (QT)", admin_settings: "Đổi chính sách",
   admin_read_conversation: "Quản trị xem hội thoại", expire_sweep: "Thu hồi do hết hạn", upload_pending: "Gửi tệp ra ngoài (chờ duyệt)", approve_external: "Duyệt gửi tệp ra ngoài",
   reject_external: "Từ chối gửi tệp ra ngoài", cancel_external: "Rút lại tệp chờ duyệt", approval_preview: "Xem trước tệp chờ duyệt",
-  admin_set_approver: "Giao/bỏ quyền duyệt", admin_archive: "Chạy lưu trữ", admin_download_audit_archive: "Tải nhật ký lưu trữ", bootstrap: "Khởi tạo hệ thống",
+  admin_set_approver: "Giao/bỏ quyền duyệt", admin_archive: "Chạy lưu trữ", call_start: "Gọi thoại", call_accept: "Nghe máy", call_end: "Kết thúc cuộc gọi", admin_download_audit_archive: "Tải nhật ký lưu trữ", bootstrap: "Khởi tạo hệ thống",
 };
 async function renderAudit(m, append) {
   if (!append) {

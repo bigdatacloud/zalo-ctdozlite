@@ -14,6 +14,11 @@ export interface Env {
   FCM_SERVICE_ACCOUNT?: string;
   /** Chỉ dùng khi kiểm thử. */
   FCM_API_BASE?: string;
+  /** Khóa TURN của Cloudflare (Realtime) cho gọi thoại qua mạng 4G/NAT. Không có thì chỉ dùng STUN. */
+  TURN_KEY_ID?: string;
+  TURN_KEY_API_TOKEN?: string;
+  /** Chỉ dùng khi kiểm thử: thời gian coi một đầu cuộc gọi là đã rớt. */
+  CALL_STALE_MS?: string;
   /** Hàng đợi gửi thông báo đẩy (nhóm lớn). Không cấu hình thì gửi trực tiếp. */
   PUSH_QUEUE?: Queue<PushJob>;
 }

@@ -3,8 +3,10 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  audioplayers_windows
   firebase_core
   flutter_secure_storage_windows
+  flutter_webrtc
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

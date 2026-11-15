@@ -209,6 +209,19 @@ class _Header extends StatelessWidget {
             Wrap(spacing: 6, runSpacing: 4, children: chips),
           ]),
         ),
+        if (conv.kind == 'dm' && !AppScope.of(context).me!.isExternal)
+          IconButton(
+            key: const Key('call-start'),
+            tooltip: 'Gọi thoại',
+            icon: const Icon(Icons.call_outlined),
+            onPressed: () async {
+              try {
+                await AppScope.read(context).calls.start(conv.id);
+              } catch (e) {
+                if (context.mounted) toast(context, '$e', error: true);
+              }
+            },
+          ),
         if (conv.isGroup)
           IconButton(
             tooltip: 'Thành viên',

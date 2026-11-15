@@ -246,6 +246,21 @@ class Api {
 
   Future<void> registerPushToken(String? token) => _send('POST', '/api/devices/push-token', body: {'token': token});
 
+  // ---------------------------------------------------------------- Gọi thoại
+  Future<Map<String, dynamic>> iceServers() => _send('GET', '/api/calls/ice-servers');
+  Future<Map<String, dynamic>> startCall(String convId) async =>
+      Map<String, dynamic>.from((await _send('POST', '/api/calls', body: {'conversation_id': convId}))['call']);
+  Future<void> acceptCall(String id) => _send('POST', '/api/calls/$id/accept');
+  Future<void> endCall(String id, String reason) => _send('POST', '/api/calls/$id/end', body: {'reason': reason});
+  Future<void> callSignal(String id, String kind, dynamic data) =>
+      _send('POST', '/api/calls/$id/signal', body: {'kind': kind, 'data': data});
+  Future<Map<String, dynamic>> callHeartbeat(String id) async =>
+      Map<String, dynamic>.from((await _send('POST', '/api/calls/$id/heartbeat'))['call']);
+  Future<Map<String, dynamic>?> activeCall() async {
+    final c = (await _send('GET', '/api/calls/active'))['call'];
+    return c == null ? null : Map<String, dynamic>.from(c);
+  }
+
   Future<void> markRead(String convId, int seq) => _send('POST', '/api/conversations/$convId/read', body: {'seq': seq});
   Future<Message> forward(String msgId, String targetConvId) async => Message.fromJson(
       (await _send('POST', '/api/messages/$msgId/forward', body: {'conversation_id': targetConvId}))['message']);

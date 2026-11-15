@@ -1,6 +1,7 @@
 import { authenticate, createSession, hashPassword, Principal, validatePassword, verifyPassword } from "./auth";
 import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, isApprover, needsApproval, requireInternal } from "./policy";
 import { approvalRoutes, notifyApprovers, pendingOut } from "./approvals";
+import { callRoutes, sweepCalls } from "./calls";
 import { handlePushQueue, PushJob, pushNewMessage } from "./push";
 import { ARCHIVE_CRON, archiveAudit, archiveMessages, mergeArchived } from "./archive";
 import { adminRoutes, sweepExpired } from "./admin";
@@ -64,6 +65,8 @@ export default {
       exec.waitUntil(archiveMessages(env).then(() => archiveAudit(env)).catch((e) => console.error("archive", e)));
     } else {
       exec.waitUntil(sweepExpired(env));
+      const url = new URL("https://cron.local/");
+      exec.waitUntil(sweepCalls({ env, req: new Request(url), url, exec }).catch((e) => console.error("calls", e)));
     }
   },
 } satisfies ExportedHandler<Env, PushJob>;
@@ -705,6 +708,7 @@ route("GET", "/api/files/:id", async (c, p) => {
 
 adminRoutes(route);
 approvalRoutes(route);
+callRoutes(route);
 
 export async function assertCanJoin(env: Env, conv: { external: number; organization: string }, ids: string[]) {
   if (!ids.length) return;

@@ -3,10 +3,12 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api.dart';
+import 'call.dart';
 import 'push.dart';
 
 String currentPlatform() {
@@ -36,6 +38,10 @@ String newClientId() {
 class AppState extends ChangeNotifier {
   static const _storage = FlutterSecureStorage();
   final Api api = Api();
+  late final CallController calls = CallController(api, () => me?.userId ?? '', () => me?.deviceId ?? '');
+  late final AppLifecycleListener _life = AppLifecycleListener(onResume: () {
+    if (me != null) calls.checkActive();
+  });
 
   Me? me;
   bool booting = true;
@@ -56,6 +62,7 @@ class AppState extends ChangeNotifier {
   bool _disposed = false;
 
   Future<void> boot() async {
+    _life; // khởi tạo bộ lắng nghe vòng đời
     try {
       final t = await _storage.read(key: 'token');
       if (t != null) {
@@ -100,6 +107,7 @@ class AppState extends ChangeNotifier {
   /// Xóa sạch dữ liệu cục bộ: token, tin nhắn trong bộ nhớ, ngắt WebSocket.
   Future<void> _wipe(String? reason) async {
     Push.instance.unregister();
+    if (calls.phase != CallPhase.idle) await calls.hangup();
     _closeWs();
     _reconnect?.cancel();
     await _storage.deleteAll();
@@ -118,6 +126,7 @@ class AppState extends ChangeNotifier {
     await refreshConversations();
     await refreshApprovals();
     Push.instance.register(api);
+    calls.checkActive();
     _connectWs();
   }
 
@@ -344,6 +353,8 @@ class AppState extends ChangeNotifier {
         _upsert(Message.fromJson(ev['message']));
       case 'conversation_changed':
         refreshConversations().then((_) => refreshApprovals()).catchError((_) {});
+      case 'call':
+        calls.onEvent(ev).catchError((e) => debugPrint('call: $e'));
       case 'approval_changed':
         if (ev['approval'] != null) _onApproval(Approval.fromJson(ev['approval']));
       case 'revoked':
@@ -381,6 +392,8 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _life.dispose();
+    calls.dispose();
     _disposed = true;
     _closeWs();
     _reconnect?.cancel();
