@@ -9,7 +9,7 @@
 import type { Env } from "./util";
 import { b64url, getSettings } from "./util";
 
-interface ServiceAccount {
+export interface ServiceAccount {
   project_id: string;
   client_email: string;
   private_key: string;
@@ -22,6 +22,12 @@ export interface PushNote {
   data: Record<string, string>;
   /** Thông báo cùng nhóm thay thế nhau trên màn hình khóa, không xếp chồng. */
   collapse: string;
+}
+
+/** Một việc trong hàng đợi: tối đa 100 thiết bị cùng một nội dung thông báo. */
+export interface PushJob {
+  devices: { id: string; push_token: string }[];
+  note: PushNote;
 }
 
 let cached: { token: string; exp: number; email: string } | null = null;
@@ -93,10 +99,24 @@ export async function pushToUsers(env: Env, userIds: string[], note: PushNote): 
     rows.push(...r.results);
   }
   if (!rows.length) return 0;
+  if (env.PUSH_QUEUE) {
+    // Nhóm lớn: chia việc vào hàng đợi, mỗi lô một lần chạy riêng, không bị giới hạn
+    // 6 kết nối đồng thời / 30 giây của một yêu cầu.
+    const jobs: { body: PushJob }[] = [];
+    for (let i = 0; i < rows.length; i += 100) jobs.push({ body: { devices: rows.slice(i, i + 100), note } });
+    for (let i = 0; i < jobs.length; i += 100) await env.PUSH_QUEUE.sendBatch(jobs.slice(i, i + 100));
+    return rows.length;
+  }
+  return sendToDevices(env, sa, rows, note);
+}
+
+/** Gửi thật tới FCM. Trả về số thông báo gửi thành công; ném lỗi nếu FCM lỗi tạm thời (để hàng đợi thử lại). */
+export async function sendToDevices(env: Env, sa: ServiceAccount, rows: { id: string; push_token: string }[], note: PushNote): Promise<number> {
   const token = await accessToken(sa);
   const base = env.FCM_API_BASE || "https://fcm.googleapis.com";
   const url = `${base}/v1/projects/${sa.project_id}/messages:send`;
   let sent = 0;
+  let transient = 0;
   // FCM v1 không còn API gửi lô: gửi song song từng nhóm 50 để không vượt giới hạn kết nối của Worker.
   for (let i = 0; i < rows.length; i += 50) {
     await Promise.all(
@@ -117,7 +137,10 @@ export async function pushToUsers(env: Env, userIds: string[], note: PushNote): 
             },
           }),
         }).catch(() => null);
-        if (!res) return;
+        if (!res) {
+          transient++;
+          return;
+        }
         if (res.ok) {
           sent++;
           return;
@@ -127,12 +150,32 @@ export async function pushToUsers(env: Env, userIds: string[], note: PushNote): 
         if (res.status === 404 || body.includes("UNREGISTERED") || body.includes("registration-token-not-registered")) {
           await env.DB.prepare("UPDATE devices SET push_token = NULL WHERE id = ?").bind(d.id).run();
         } else {
+          if (res.status === 429 || res.status >= 500) transient++;
           console.error(`FCM ${res.status}: ${body.slice(0, 300)}`);
         }
       }),
     );
   }
+  if (transient && !sent) throw new Error(`FCM lỗi tạm thời (${transient} thiết bị)`);
   return sent;
+}
+
+/** Xử lý hàng đợi thông báo. */
+export async function handlePushQueue(batch: MessageBatch<PushJob>, env: Env) {
+  const sa = serviceAccount(env);
+  for (const msg of batch.messages) {
+    if (!sa) {
+      msg.ack();
+      continue;
+    }
+    try {
+      await sendToDevices(env, sa, msg.body.devices, msg.body.note);
+      msg.ack();
+    } catch (e) {
+      console.error("push queue", e);
+      msg.retry({ delaySeconds: 30 });
+    }
+  }
 }
 
 /** Thông báo tin nhắn mới: không bao giờ kèm nội dung tin. */

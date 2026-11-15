@@ -84,9 +84,11 @@ Cần gói **Workers Paid** để dùng Durable Objects.
 cd chat-noibo/server
 npm ci
 npx wrangler login
-npx wrangler d1 create chat_noibo --location=apac      # dán database_id vào wrangler.toml
+npx wrangler d1 create chat_noibo --location=apac        # dán database_id vào wrangler.toml (binding DB)
+npx wrangler d1 create chat_noibo_audit --location=apac  # dán database_id vào wrangler.toml (binding AUDIT)
 npx wrangler r2 bucket create chat-noibo-files
-npm run db:migrate:remote
+npx wrangler queues create chat-noibo-push
+npm run db:migrate:remote                                # chạy migration cho cả hai DB
 npx wrangler secret put ADMIN_BOOTSTRAP_TOKEN          # chuỗi ngẫu nhiên, dùng 1 lần
 npm run deploy
 # gắn tên miền riêng (vd chat.congty.vn) cho Worker trong dashboard → Settings → Domains & Routes
@@ -102,6 +104,22 @@ curl -X POST https://chat.congty.vn/api/admin/bootstrap -H 'content-type: applic
 Sau đó vào `https://chat.congty.vn/admin/` để làm mọi việc còn lại.
 
 Chạy thử trên máy: `npm run db:migrate:local && npm run dev`, rồi `node scripts/seed-demo.mjs` để có dữ liệu mẫu (đăng nhập `nv001` / `matkhau123`).
+
+## Dung lượng và quy mô
+
+- **Tin nhắn**: D1 `chat_noibo` (tối đa 10 GB). Hằng đêm 02:17, tin chữ cũ hơn 180 ngày (chỉnh được 90 ngày–2 năm) được nén gzip theo hội thoại + tháng, cất vào R2 rồi xóa khỏi D1. Người dùng cuộn lên vẫn thấy liền mạch: máy chủ tự ghép D1 + R2. Tin có tệp được giữ lại trong D1.
+- **Nhật ký kiểm soát**: D1 riêng `chat_noibo_audit`, không chiếm chỗ và không tranh luồng ghi với tin nhắn. Xem lại cùng một tệp chỉ ghi một dòng mỗi 12 giờ. Nhật ký cũ hơn 2 năm (chỉnh được) cất vào R2, tải về ở trang quản trị → Nhật ký → *Nhật ký đã lưu trữ*.
+- **Thông báo đẩy**: gửi qua Cloudflare Queues, mỗi lô 100 thiết bị chạy riêng, nên nhóm hàng nghìn người không bị cắt. Lỗi tạm thời của Firebase sẽ được thử lại sau 30 giây, tối đa 3 lần.
+- **Ước tính** (chưa đo trên Cloudflare thật): khoảng 1.500–2.000 nhân viên dùng thoải mái trên một DB tin nhắn. Trần ở giờ cao điểm khoảng 4.000–8.000 người tùy số tin mỗi người.
+
+Đo thật trước khi triển khai rộng, **chỉ trên môi trường thử nghiệm** (kịch bản tạo hàng trăm tài khoản giả):
+
+```bash
+node scripts/load-test.mjs --base https://chat-staging.congty.vn --admin admin --admin-pass '...' \
+     --users 1000 --groups 40 --group-size 50 --rate 30 --duration 120
+```
+
+Tăng dần `--rate` cho tới khi độ trễ p95 vọt lên: đó là trần thật.
 
 ## Thông báo đẩy (Firebase)
 
@@ -132,19 +150,28 @@ flutter build apk     --release --dart-define=API_BASE=https://chat.congty.vn
 flutter build ipa     --release --dart-define=API_BASE=https://chat.congty.vn   # cần máy Mac + tài khoản Apple
 ```
 
+**Trước lần phát hành đầu tiên**, đổi mã ứng dụng sang tên miền công ty (sau đó không đổi được nữa):
+`./scripts/doi-ma-ung-dung.sh vn.congty.chat` (Android dùng nguyên mã; iOS tự đổi `_` thành `-`).
+
 CI (`.github/workflows/chat-noibo.yml`) build cả ba nền tảng khi có thay đổi trong `chat-noibo/`. Đặt biến kho `CHAT_API_BASE` để bản build trỏ đúng máy chủ.
 
 Phát hành:
 - **Windows**: đẩy qua GPO/Intune. Khóa Zalo bằng AppLocker/WDAC (chặn publisher VNG) và chặn DNS `*.zalo.me`, `*.zaloapp.com` trên tường lửa công ty.
-- **Android**: APK nội bộ qua MDM hoặc link tải nội bộ. Cần tạo keystore ký bản phát hành; template hiện ký bằng khóa debug.
+- **Android**: APK nội bộ qua MDM hoặc link tải nội bộ. Ký bản phát hành:
+  1. Tạo khóa (một lần, **giữ cẩn thận**: mất khóa thì không cập nhật được app đã cài):
+     `keytool -genkey -v -keystore chat-noibo.jks -keyalg RSA -keysize 2048 -validity 10000 -alias chat-noibo`
+  2. Build tay: tạo `app/android/key.properties` (đã nằm trong .gitignore) với `storeFile`, `storePassword`, `keyAlias`, `keyPassword`.
+  3. CI: đặt các Secrets `ANDROID_KEYSTORE_BASE64` (kết quả `base64 -w0 chat-noibo.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+
+  Thiếu khóa thì APK được ký bằng khóa debug, chỉ để thử, không phát hành.
 - **iPhone**: cần Apple Developer Program. Phát hành nội bộ qua *Custom App* trên Apple Business Manager hoặc TestFlight. Bản build mỗi đợt TestFlight hết hạn sau 90 ngày.
 
 ## Giới hạn và rủi ro đã biết
 
 - Thông báo đẩy đã có mã nhưng chỉ chạy khi cấu hình Firebase/Apple (mục trên). Đã kiểm thử với máy chủ FCM giả lập, chưa thử trên điện thoại thật.
-- Nhóm rất lớn (vài trăm người): mỗi tin gửi một thông báo cho từng thiết bị (FCM không còn gửi theo lô). Nếu thấy chậm thì chuyển sang Cloudflare Queues.
 - Chưa có: gọi thoại/video, trả lời trích dẫn, cảm xúc, tìm kiếm tin nhắn, xem PDF/Office trong app (hiện chỉ xem được ảnh và văn bản; tệp loại khác chỉ mở được ở nơi có quyền lưu).
 - Chưa tự gửi email thông tin đăng nhập cho đối tác: trang quản trị hiện mật khẩu một lần để IT gửi thủ công.
-- **Dung lượng D1**: mỗi cơ sở dữ liệu D1 có giới hạn dung lượng (10 GB tại thời điểm viết, cần kiểm tra lại). Ước tính khoảng 0,4 KB/tin kể cả chỉ mục: 500 người × 200 tin/ngày ≈ 40 MB/ngày ≈ 14 GB/năm. Sẽ chạm giới hạn trước một năm nếu không lưu trữ tin cũ ra R2 hoặc chia DB theo năm. Phải làm trước khi vượt khoảng 70% giới hạn.
+- Tin chữ đã lưu trữ ra R2 vẫn xem được, nhưng quản trị viên không còn xem trực tiếp được ở trang quản trị: phải tải tệp lưu trữ từ R2 (dashboard Cloudflare, thư mục `archive/messages/`).
+- Thu hồi tin chỉ áp dụng cho tin còn trong D1 (thực tế không ảnh hưởng: người dùng chỉ thu hồi được trong 24 giờ).
 - **Không mã hóa đầu-cuối, có chủ đích**: máy chủ phải đọc được nội dung để thực thi luật, lưu nhật ký và điều tra rò rỉ. Dữ liệu được Cloudflare mã hóa khi lưu, nhưng về mặt kỹ thuật Cloudflare (một công ty Mỹ) nắm khóa. Nếu công ty thuộc diện phải lưu dữ liệu tại Việt Nam theo Nghị định 53/2022 thì Cloudflare không đáp ứng; cần pháp chế xác nhận.
 - Điện thoại cá nhân vẫn chụp ảnh màn hình được bằng máy khác. Hình mờ chỉ răn đe, không ngăn chặn.

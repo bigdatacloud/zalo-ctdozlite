@@ -1,7 +1,7 @@
 import { authenticate, createSession, hashPassword, Principal, validatePassword, verifyPassword } from "./auth";
 import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, isApprover, needsApproval, requireInternal } from "./policy";
 import { approvalRoutes, notifyApprovers, pendingOut } from "./approvals";
-import { pushNewMessage } from "./push";
+import { handlePushQueue, PushJob, pushNewMessage } from "./push";
 import { ARCHIVE_CRON, archiveAudit, archiveMessages, mergeArchived } from "./archive";
 import { adminRoutes, sweepExpired } from "./admin";
 import { audit, auditDb, Env, getSettings, HttpError, json, newId, now, readJson, str } from "./util";
@@ -56,6 +56,9 @@ export default {
     for (const [k, v] of Object.entries(cors(env))) h.set(k, v);
     return new Response(res.body, { status: res.status, headers: h });
   },
+  async queue(batch: MessageBatch<PushJob>, env: Env) {
+    await handlePushQueue(batch, env);
+  },
   async scheduled(ev: ScheduledController, env: Env, exec: ExecutionContext) {
     if (ev.cron === ARCHIVE_CRON) {
       exec.waitUntil(archiveMessages(env).then(() => archiveAudit(env)).catch((e) => console.error("archive", e)));
@@ -63,7 +66,7 @@ export default {
       exec.waitUntil(sweepExpired(env));
     }
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env, PushJob>;
 
 async function dispatch(c: Ctx): Promise<Response> {
   for (const [m, re, keys, h] of routes) {

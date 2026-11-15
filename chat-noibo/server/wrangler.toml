@@ -32,6 +32,17 @@ class_name = "UserHub"
 tag = "v1"
 new_sqlite_classes = ["UserHub"]
 
+# Hàng đợi gửi thông báo đẩy (cần gói Workers Paid). Tạo bằng: npx wrangler queues create chat-noibo-push
+[[queues.producers]]
+binding = "PUSH_QUEUE"
+queue = "chat-noibo-push"
+
+[[queues.consumers]]
+queue = "chat-noibo-push"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 3
+
 # Mỗi 15 phút: thu hồi phiên của tài khoản (thường là tài khoản bên ngoài) đã hết hạn.
 [triggers]
 crons = ["*/15 * * * *", "17 19 * * *"]   # 19:17 UTC = 02:17 giờ VN: lưu trữ tin/nhật ký cũ

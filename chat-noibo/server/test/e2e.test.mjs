@@ -541,7 +541,7 @@ test("thông báo đẩy: không bao giờ chứa nội dung tin nhắn", async 
   await api("/api/auth/logout", { token: ctx.binh, method: "POST" });
   fcm.sent.length = 0;
   await api(`/api/conversations/${ctx.dm}/messages`, { token: ctx.an, method: "POST", body: { text: "Lần 3" } });
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 3000)); // dài hơn độ trễ gom lô của hàng đợi (1 giây)
   assert.equal(fcm.sent.length, 0);
 });
 

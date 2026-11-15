@@ -1,4 +1,5 @@
 import type { UserHub } from "./hub";
+import type { PushJob } from "./push";
 
 export interface Env {
   DB: D1Database;
@@ -13,6 +14,8 @@ export interface Env {
   FCM_SERVICE_ACCOUNT?: string;
   /** Chỉ dùng khi kiểm thử. */
   FCM_API_BASE?: string;
+  /** Hàng đợi gửi thông báo đẩy (nhóm lớn). Không cấu hình thì gửi trực tiếp. */
+  PUSH_QUEUE?: Queue<PushJob>;
 }
 
 export class HttpError extends Error {

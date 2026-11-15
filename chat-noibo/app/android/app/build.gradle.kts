@@ -1,3 +1,13 @@
+import java.util.Properties
+
+// Khóa ký bản phát hành: android/key.properties (KHÔNG commit) hoặc biến môi trường trên CI.
+//   storeFile=/đường/dẫn/chat-noibo.jks  storePassword=...  keyAlias=chat-noibo  keyPassword=...
+val keyProps = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingValue(name: String, env: String): String? = keyProps.getProperty(name) ?: System.getenv(env)
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -29,11 +39,23 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        val store = signingValue("storeFile", "ANDROID_KEYSTORE_PATH")
+        if (store != null) {
+            create("release") {
+                storeFile = file(store)
+                storePassword = signingValue("storePassword", "ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "ANDROID_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Có khóa thì ký bằng khóa công ty; chưa có thì ký tạm bằng khóa debug (chỉ để thử,
+            // KHÔNG phát hành bản này: cập nhật về sau sẽ không cài đè được).
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 }
