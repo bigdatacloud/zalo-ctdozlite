@@ -186,10 +186,18 @@ export async function insertMessage(
   return out;
 }
 
-async function convOut(env: Env, conv: ConvRow, who: Principal, settings: Record<string, string>) {
+async function convOut(
+  env: Env,
+  conv: ConvRow & { peer_id?: string | null; peer_name?: string | null },
+  who: Principal,
+  settings: Record<string, string>,
+) {
   let name = conv.name;
   let peer: { id: string; display_name: string } | null = null;
-  if (conv.kind === "dm") {
+  if (conv.kind === "dm" && conv.peer_id !== undefined) {
+    peer = conv.peer_id ? { id: conv.peer_id, display_name: conv.peer_name ?? "" } : null;
+    name = peer?.display_name ?? "Hội thoại";
+  } else if (conv.kind === "dm") {
     peer = await env.DB.prepare(
       "SELECT u.id, u.display_name FROM members m JOIN users u ON u.id = m.user_id WHERE m.conversation_id = ? AND m.user_id != ?",
     )
@@ -341,20 +349,24 @@ route("GET", "/api/users", async (c) => {
 route("GET", "/api/conversations", async (c) => {
   const me = await authenticate(c.env, c.req);
   const settings = await getSettings(c.env);
-  const r = await c.env.DB.prepare(
-    `SELECT c.*, m.role AS member_role, m.last_read_seq FROM conversations c
-       JOIN members m ON m.conversation_id = c.id AND m.user_id = ?
-      ORDER BY c.last_msg_at DESC, c.created_at DESC`,
-  )
-    .bind(me.user_id)
-    .all<ConvRow>();
-  const lastIds = r.results.filter((x) => x.last_seq > 0);
+  // Hai truy vấn cố định, không phụ thuộc số hội thoại (trước đây N+1).
+  const [r, lastRes] = await c.env.DB.batch<ConvRow & { peer_id: string | null; peer_name: string | null } & MsgRow>([
+    c.env.DB.prepare(
+      `SELECT c.*, m.role AS member_role, m.last_read_seq,
+              CASE WHEN c.kind = 'dm' THEN (SELECT u.id FROM members p JOIN users u ON u.id = p.user_id
+                                             WHERE p.conversation_id = c.id AND p.user_id != ?1 LIMIT 1) END AS peer_id,
+              CASE WHEN c.kind = 'dm' THEN (SELECT u.display_name FROM members p JOIN users u ON u.id = p.user_id
+                                             WHERE p.conversation_id = c.id AND p.user_id != ?1 LIMIT 1) END AS peer_name
+         FROM conversations c JOIN members m ON m.conversation_id = c.id AND m.user_id = ?1
+        ORDER BY c.last_msg_at DESC, c.created_at DESC`,
+    ).bind(me.user_id),
+    c.env.DB.prepare(
+      `${MSG_SELECT} JOIN members mb ON mb.conversation_id = m.conversation_id AND mb.user_id = ?1
+         JOIN conversations cv ON cv.id = m.conversation_id AND cv.last_seq = m.seq`,
+    ).bind(me.user_id),
+  ]);
   const lasts = new Map<string, ReturnType<typeof msgOut>>();
-  if (lastIds.length) {
-    const stmts = lastIds.map((x) => c.env.DB.prepare(`${MSG_SELECT} WHERE m.conversation_id = ? AND m.seq = ?`).bind(x.id, x.last_seq));
-    const res = await c.env.DB.batch<MsgRow>(stmts);
-    res.forEach((rr) => rr.results[0] && lasts.set(rr.results[0].conversation_id, msgOut(rr.results[0])));
-  }
+  for (const row of lastRes.results) lasts.set(row.conversation_id, msgOut(row as MsgRow));
   const out = [];
   for (const conv of r.results) out.push({ ...(await convOut(c.env, conv, me, settings)), last_message: lasts.get(conv.id) ?? null });
   return json({ conversations: out });
@@ -399,11 +411,7 @@ export async function createGroup(
   external: { organization: string } | null = null,
 ) {
   const ids = [...new Set([me.user_id, ...memberIdsIn])].slice(0, 2000);
-  const valid = await c.env.DB.prepare(
-    `SELECT id, kind, organization, display_name FROM users WHERE status='active' AND id IN (${ids.map(() => "?").join(",")})`,
-  )
-    .bind(...ids)
-    .all<{ id: string; kind: string; organization: string; display_name: string }>();
+  const valid = { results: (await usersByIds(c.env, ids)).filter((u) => u.status === "active") };
   const convShape = { external: external ? 1 : 0, organization: external?.organization ?? "" };
   for (const u of valid.results) {
     const j = canJoin(convShape, u);
@@ -509,14 +517,22 @@ route("POST", "/api/conversations/:id/files", async (c, p) => {
   const max = Number(c.env.MAX_UPLOAD_BYTES || 52428800);
   const len = Number(c.req.headers.get("content-length") ?? 0);
   if (len > max) throw new HttpError(413, "too_large", `Tệp vượt quá ${Math.round(max / 1048576)} MB`);
-  const body = await c.req.arrayBuffer();
-  if (body.byteLength === 0) throw new HttpError(400, "empty_file", "Tệp rỗng");
-  if (body.byteLength > max) throw new HttpError(413, "too_large", `Tệp vượt quá ${Math.round(max / 1048576)} MB`);
+  if (!len || !c.req.body) throw new HttpError(400, "empty_file", "Tệp rỗng hoặc thiếu Content-Length");
   const mime = (c.req.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim().slice(0, 100);
   const fileId = newId("f");
-  const sha = await sha256Hex(body);
   const key = `${conv.id}/${fileId}`;
-  await c.env.FILES.put(key, body, { httpMetadata: { contentType: mime }, customMetadata: { uploader: me.user_id, sha256: sha } });
+  // Ghi thẳng xuống R2 trong lúc nhận, đồng thời tính SHA-256: không giữ cả tệp trong bộ nhớ
+  // (mỗi isolate chỉ có 128 MB, nhiều người cùng gửi tệp lớn sẽ tràn).
+  const [toR2, toHash] = c.req.body.tee();
+  const digest = new crypto.DigestStream("SHA-256");
+  const fixed = new FixedLengthStream(len);
+  const [, , obj] = await Promise.all([
+    toHash.pipeTo(digest),
+    toR2.pipeTo(fixed.writable),
+    c.env.FILES.put(key, fixed.readable, { httpMetadata: { contentType: mime }, customMetadata: { uploader: me.user_id } }),
+  ]);
+  const sha = [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const body = { byteLength: obj?.size ?? len };
   await c.env.DB.prepare(
     "INSERT INTO files(id,conversation_id,uploader_id,r2_key,name,mime,size,sha256,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
   )
@@ -680,11 +696,23 @@ approvalRoutes(route);
 
 export async function assertCanJoin(env: Env, conv: { external: number; organization: string }, ids: string[]) {
   if (!ids.length) return;
-  const r = await env.DB.prepare(`SELECT id, kind, organization, display_name FROM users WHERE id IN (${ids.map(() => "?").join(",")})`)
-    .bind(...ids)
-    .all<{ id: string; kind: string; organization: string; display_name: string }>();
-  for (const u of r.results) {
+  for (const u of await usersByIds(env, ids)) {
     const j = canJoin(conv, u);
     if (!j.ok) throw new HttpError(403, "policy_denied", `${u.display_name}: ${j.reason}`);
   }
+}
+
+/** D1 cho tối đa 100 tham số mỗi câu lệnh: tra người dùng theo lô 90. */
+export async function usersByIds(env: Env, ids: string[]) {
+  const out: { id: string; kind: string; organization: string; display_name: string; status: string }[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    const r = await env.DB.prepare(
+      `SELECT id, kind, organization, display_name, status FROM users WHERE id IN (${part.map(() => "?").join(",")})`,
+    )
+      .bind(...part)
+      .all<{ id: string; kind: string; organization: string; display_name: string; status: string }>();
+    out.push(...r.results);
+  }
+  return out;
 }

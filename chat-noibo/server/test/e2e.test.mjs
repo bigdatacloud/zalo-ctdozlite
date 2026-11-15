@@ -543,3 +543,20 @@ test("thông báo đẩy: không bao giờ chứa nội dung tin nhắn", async 
   await new Promise((r) => setTimeout(r, 800));
   assert.equal(fcm.sent.length, 0);
 });
+
+test("nhóm lớn (150 người) và danh sách hội thoại", async () => {
+  const ids = [];
+  for (let i = 0; i < 150; i++) {
+    const r = await api("/api/admin/users", { token: ctx.admin, method: "POST", body: { username: `cn${i}`, display_name: `Công nhân ${i}`, department: "Xưởng 2", password: "matkhau123" } });
+    ids.push(r.data.user_id);
+  }
+  let r = await api("/api/admin/groups", { token: ctx.admin, method: "POST", body: { name: "Toàn xưởng 2", member_ids: [ctx.nv001_id, ...ids] } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await api(`/api/conversations/${r.data.conversation_id}`, { token: ctx.an });
+  assert.equal(r.data.members.length, 152, "admin + An + 150 công nhân");
+  r = await api("/api/conversations", { token: ctx.an });
+  const dm = r.data.conversations.find((c) => c.id === ctx.dm);
+  assert.equal(dm.name, "Trần Thị Bình", "tên chat 1-1 vẫn đúng sau khi gộp truy vấn");
+  assert.ok(dm.last_message.text.length > 0);
+  assert.ok(r.data.conversations.every((c) => c.last_seq === 0 || c.last_message), "hội thoại nào có tin đều có tin cuối");
+});
