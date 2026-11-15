@@ -91,17 +91,17 @@ npx wrangler queues create chat-noibo-push
 npm run db:migrate:remote                                # chạy migration cho cả hai DB
 npx wrangler secret put ADMIN_BOOTSTRAP_TOKEN          # chuỗi ngẫu nhiên, dùng 1 lần
 npm run deploy
-# gắn tên miền riêng (vd chat.congty.vn) cho Worker trong dashboard → Settings → Domains & Routes
+# tên miền chat.eco-tech.work đã khai báo trong wrangler.toml (routes): eco-tech.work phải nằm trong cùng tài khoản Cloudflare
 ```
 
 Tạo quản trị viên đầu tiên (chỉ chạy được khi chưa có người dùng nào):
 
 ```bash
-curl -X POST https://chat.congty.vn/api/admin/bootstrap -H 'content-type: application/json' \
+curl -X POST https://chat.eco-tech.work/api/admin/bootstrap -H 'content-type: application/json' \
   -d '{"token":"<ADMIN_BOOTSTRAP_TOKEN>","username":"admin","display_name":"Phòng IT","password":"<mật khẩu mạnh>"}'
 ```
 
-Sau đó vào `https://chat.congty.vn/admin/` để làm mọi việc còn lại.
+Sau đó vào `https://chat.eco-tech.work/admin/` để làm mọi việc còn lại.
 
 Chạy thử trên máy: `npm run db:migrate:local && npm run dev`, rồi `node scripts/seed-demo.mjs` để có dữ liệu mẫu (đăng nhập `nv001` / `matkhau123`).
 
@@ -115,7 +115,7 @@ Chạy thử trên máy: `npm run db:migrate:local && npm run dev`, rồi `node 
 Đo thật trước khi triển khai rộng, **chỉ trên môi trường thử nghiệm** (kịch bản tạo hàng trăm tài khoản giả):
 
 ```bash
-node scripts/load-test.mjs --base https://chat-staging.congty.vn --admin admin --admin-pass '...' \
+node scripts/load-test.mjs --base https://chat-staging.eco-tech.work --admin admin --admin-pass '...' \
      --users 1000 --groups 40 --group-size 50 --rate 30 --duration 120
 ```
 
@@ -131,13 +131,13 @@ Ngoài tin nhắn, còn có thông báo "Tệp chờ bạn duyệt" cho người
 
 Cài đặt (một lần):
 1. [console.firebase.google.com](https://console.firebase.google.com) → tạo dự án (không cần Google Analytics).
-2. Thêm ứng dụng **Android** với package `vn.noibo.chat_noibo` và ứng dụng **iOS** với bundle `vn.noibo.chatNoibo`. Không cần tải `google-services.json` hay `GoogleService-Info.plist`. Ghi lại *Project ID*, *Sender ID*, *Web API Key* và *App ID* của từng ứng dụng.
+2. Thêm ứng dụng **Android** với package `work.eco_tech.chat` và ứng dụng **iOS** với bundle `work.eco-tech.chat`. Không cần tải `google-services.json` hay `GoogleService-Info.plist`. Ghi lại *Project ID*, *Sender ID*, *Web API Key* và *App ID* của từng ứng dụng.
 3. **iPhone**: Apple Developer → Keys → tạo khóa APNs (.p8) → tải lên Firebase (Project settings → Cloud Messaging → Apple app configuration). Trong Xcode: Runner → Signing & Capabilities → **+ Push Notifications**.
 4. Máy chủ: Project settings → Service accounts → *Generate new private key*, rồi
    `npx wrangler secret put FCM_SERVICE_ACCOUNT < khoa-tai-khoan-dich-vu.json`. Xóa tệp khóa sau khi nạp.
 5. Đặt các biến kho GitHub `FCM_PROJECT_ID`, `FCM_SENDER_ID`, `FCM_API_KEY`, `FCM_APP_ID_ANDROID`, `FCM_APP_ID_IOS` (Settings → Variables) để CI build app có thông báo. Build tay thì thêm các `--dart-define` tương ứng.
 
-Đổi `vn.noibo.*` sang tên miền công ty **trước** lần phát hành đầu tiên; sau đó không đổi được nữa. Máy Huawei đời mới không có dịch vụ Google nên sẽ không nhận được thông báo khi app đang tắt.
+Máy Huawei đời mới không có dịch vụ Google nên sẽ không nhận được thông báo khi app đang tắt.
 
 ## Build ứng dụng
 
@@ -145,15 +145,14 @@ Cài đặt (một lần):
 
 ```bash
 cd chat-noibo/app
-flutter build windows --release --dart-define=API_BASE=https://chat.congty.vn
-flutter build apk     --release --dart-define=API_BASE=https://chat.congty.vn
-flutter build ipa     --release --dart-define=API_BASE=https://chat.congty.vn   # cần máy Mac + tài khoản Apple
+flutter build windows --release --dart-define=API_BASE=https://chat.eco-tech.work
+flutter build apk     --release --dart-define=API_BASE=https://chat.eco-tech.work
+flutter build ipa     --release --dart-define=API_BASE=https://chat.eco-tech.work   # cần máy Mac + tài khoản Apple
 ```
 
-**Trước lần phát hành đầu tiên**, đổi mã ứng dụng sang tên miền công ty (sau đó không đổi được nữa):
-`./scripts/doi-ma-ung-dung.sh vn.congty.chat` (Android dùng nguyên mã; iOS tự đổi `_` thành `-`).
+Mã ứng dụng đã đặt theo tên miền công ty: Android `work.eco_tech.chat`, iOS `work.eco-tech.chat`. Từ lần phát hành đầu tiên trở đi **không đổi nữa** (đổi thì máy đã cài không nhận bản cập nhật).
 
-CI (`.github/workflows/chat-noibo.yml`) build cả ba nền tảng khi có thay đổi trong `chat-noibo/`. Đặt biến kho `CHAT_API_BASE` để bản build trỏ đúng máy chủ.
+CI (`.github/workflows/chat-noibo.yml`) build cả ba nền tảng khi có thay đổi trong `chat-noibo/`. Bản build mặc định trỏ tới `https://chat.eco-tech.work`; đặt biến kho `CHAT_API_BASE` nếu muốn trỏ sang máy chủ thử nghiệm.
 
 Phát hành:
 - **Windows**: đẩy qua GPO/Intune. Khóa Zalo bằng AppLocker/WDAC (chặn publisher VNG) và chặn DNS `*.zalo.me`, `*.zaloapp.com` trên tường lửa công ty.

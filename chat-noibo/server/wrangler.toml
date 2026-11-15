@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Tên miền riêng: tên miền eco-tech.work phải nằm trong cùng tài khoản Cloudflare.
+# Cloudflare tự tạo bản ghi DNS và chứng chỉ HTTPS khi deploy.
+routes = [{ pattern = "chat.eco-tech.work", custom_domain = true }]
+
 # Cơ sở dữ liệu tin nhắn, người dùng, nhóm, nhật ký kiểm soát.
 # Tạo bằng: npx wrangler d1 create chat_noibo --location=apac  rồi dán database_id vào đây.
 [[d1_databases]]
@@ -53,8 +57,9 @@ directory = "./public"
 not_found_handling = "none"
 
 [vars]
-# Origin được phép gọi API từ trình duyệt (chỉ dùng cho bản web thử nghiệm). Ứng dụng native không cần CORS.
-CORS_ORIGIN = "*"
+# Origin được phép gọi API từ trình duyệt. Trang quản trị cùng tên miền nên không cần mở rộng hơn;
+# ứng dụng Windows/Android/iPhone không bị CORS ràng buộc. Chạy thử trên máy: đặt CORS_ORIGIN="*" trong .dev.vars.
+CORS_ORIGIN = "https://chat.eco-tech.work"
 # Giới hạn kích thước một tệp tải lên (byte).
 MAX_UPLOAD_BYTES = "52428800"
 

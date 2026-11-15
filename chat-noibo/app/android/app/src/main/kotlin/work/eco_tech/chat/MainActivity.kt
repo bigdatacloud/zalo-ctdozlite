@@ -1,4 +1,4 @@
-package vn.noibo.chat_noibo
+package work.eco_tech.chat
 
 import android.os.Bundle
 import android.view.WindowManager

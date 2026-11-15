@@ -44,7 +44,7 @@ class Push {
         appId: _appId,
         messagingSenderId: _senderId,
         projectId: _projectId,
-        iosBundleId: 'vn.noibo.chatNoibo',
+        iosBundleId: 'work.eco-tech.chat',
       ),
     );
     _ready = true;

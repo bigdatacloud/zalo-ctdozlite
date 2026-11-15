@@ -9,8 +9,8 @@ on:
 
 env:
   FLUTTER_VERSION: "3.50.0"
-  # Đặt biến kho (Settings → Variables) CHAT_API_BASE = https://chat.<tên-miền-công-ty>
-  API_BASE: ${{ vars.CHAT_API_BASE || 'http://127.0.0.1:8787' }}
+  # Có thể ghi đè bằng biến kho CHAT_API_BASE (vd trỏ sang máy chủ thử nghiệm).
+  API_BASE: ${{ vars.CHAT_API_BASE || 'https://chat.eco-tech.work' }}
   # Cấu hình Firebase (không phải bí mật, nằm sẵn trong app): đặt ở Settings → Variables. Thiếu thì app tắt thông báo đẩy.
   FCM_DEFINES: >-
     --dart-define=FCM_PROJECT_ID=${{ vars.FCM_PROJECT_ID }}
