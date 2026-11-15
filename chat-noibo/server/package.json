@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply chat_noibo --local",
-    "db:migrate:remote": "wrangler d1 migrations apply chat_noibo --remote",
+    "db:migrate:local": "wrangler d1 migrations apply chat_noibo --local && wrangler d1 migrations apply chat_noibo_audit --local",
+    "db:migrate:remote": "wrangler d1 migrations apply chat_noibo --remote && wrangler d1 migrations apply chat_noibo_audit --remote",
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-concurrency=1 test/e2e.test.mjs"
   },

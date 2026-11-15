@@ -1,7 +1,8 @@
 // API quản trị: tài khoản, thiết bị, nhóm công ty, chính sách, nhật ký.
 import { authenticate, hashPassword, Principal, validatePassword } from "./auth";
-import { assertCanJoin, createGroup, fanout, fanoutConv, route as routeFn } from "./index";
-import { audit, bool01, Env, getSettings, HttpError, json, newId, now, readJson, str } from "./util";
+import { assertCanJoin, createGroup, fanout, fanoutConv, route as routeFn, usersByIds } from "./index";
+import { archiveAudit, archiveMessages } from "./archive";
+import { audit, auditDb, bool01, Env, getSettings, HttpError, json, newId, now, readJson, str } from "./util";
 
 type Route = typeof routeFn;
 
@@ -34,6 +35,8 @@ const SETTING_KEYS: Record<string, string[]> = {
   members_can_create_groups: ["0", "1"],
   mobile_untrusted_files: ["allow", "view", "deny"],
   push_content: ["none", "sender"],
+  archive_after_days: ["90", "180", "365", "730"],
+  audit_keep_days: ["365", "730", "1095", "1825"],
 };
 
 export function adminRoutes(route: Route) {
@@ -290,6 +293,35 @@ export function adminRoutes(route: Route) {
     return json({ ok: true });
   });
 
+  // Chạy lưu trữ ngay (bình thường chạy tự động lúc 02:17 hằng ngày).
+  route("POST", "/api/admin/maintenance/archive", async (c) => {
+    const me = await requireAdmin(c.env, c.req);
+    const b = await readJson<{ messages_older_than_days?: number; audit_older_than_days?: number }>(c.req);
+    const n = (v: unknown) => (typeof v === "number" && v >= 0 ? v : undefined);
+    const messages = await archiveMessages(c.env, n(b.messages_older_than_days));
+    const auditRows = await archiveAudit(c.env, n(b.audit_older_than_days));
+    await audit(c.env, { user_id: me.user_id, action: "admin_archive", allowed: true, detail: `${messages} tin, ${auditRows} dòng nhật ký` });
+    return json({ messages, audit: auditRows });
+  });
+
+  route("GET", "/api/admin/audit-archives", async (c) => {
+    await requireAdmin(c.env, c.req);
+    const list = await c.env.FILES.list({ prefix: "archive/audit/", limit: 1000 });
+    return json({ archives: list.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded.getTime() })) });
+  });
+
+  route("GET", "/api/admin/audit-archives/file", async (c) => {
+    const me = await requireAdmin(c.env, c.req);
+    const key = c.url.searchParams.get("key") ?? "";
+    if (!key.startsWith("archive/audit/")) throw new HttpError(400, "bad_field", "Khóa không hợp lệ");
+    const obj = await c.env.FILES.get(key);
+    if (!obj) throw new HttpError(404, "not_found", "Không tìm thấy");
+    await audit(c.env, { user_id: me.user_id, action: "admin_download_audit_archive", target: key, allowed: true });
+    return new Response(obj.body, {
+      headers: { "content-type": "application/gzip", "content-disposition": `attachment; filename="${key.split("/").pop()}"`, "cache-control": "no-store" },
+    });
+  });
+
   route("GET", "/api/admin/settings", async (c) => {
     await requireAdmin(c.env, c.req);
     return json({ settings: await getSettings(c.env) });
@@ -311,15 +343,20 @@ export function adminRoutes(route: Route) {
   route("GET", "/api/admin/audit", async (c) => {
     await requireAdmin(c.env, c.req);
     const q = c.url.searchParams;
-    const r = await c.env.DB.prepare(
-      `SELECT a.*, u.username, u.display_name FROM audit a LEFT JOIN users u ON u.id = a.user_id
-        WHERE (?1 IS NULL OR a.user_id = ?1) AND (?2 IS NULL OR a.action = ?2) AND (?3 IS NULL OR a.allowed = ?3)
-          AND (?4 IS NULL OR a.id < ?4)
-        ORDER BY a.id DESC LIMIT ?5`,
-    )
+    const r = await auditDb(c.env)
+      .prepare(
+        `SELECT * FROM audit
+          WHERE (?1 IS NULL OR user_id = ?1) AND (?2 IS NULL OR action = ?2) AND (?3 IS NULL OR allowed = ?3)
+            AND (?4 IS NULL OR id < ?4)
+          ORDER BY id DESC LIMIT ?5`,
+      )
       .bind(q.get("user_id"), q.get("action"), q.get("allowed") === null ? null : Number(q.get("allowed")), q.get("before_id") ? Number(q.get("before_id")) : null, Math.min(500, Number(q.get("limit") ?? 100)))
-      .all();
-    return json({ audit: r.results });
+      .all<{ user_id: string | null }>();
+    // Nhật ký nằm ở DB riêng: tra tên người dùng ở DB chính.
+    const names = new Map((await usersByIds(c.env, [...new Set(r.results.map((a) => a.user_id).filter((x): x is string => !!x))])).map((u) => [u.id, u]));
+    return json({
+      audit: r.results.map((a) => ({ ...a, username: names.get(a.user_id ?? "")?.username ?? null, display_name: names.get(a.user_id ?? "")?.display_name ?? null })),
+    });
   });
 
   // Kiểm tra quyền xem một hội thoại bất kỳ (phục vụ điều tra rò rỉ). Mỗi lần xem đều bị ghi nhật ký.

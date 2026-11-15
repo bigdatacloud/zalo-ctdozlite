@@ -69,7 +69,8 @@ before(async () => {
     token_uri: `${mockBase}/token`,
   };
   writeFileSync(join(state, "test.env"), `ADMIN_BOOTSTRAP_TOKEN=t0ken-khoi-tao\nFCM_API_BASE=${mockBase}\nFCM_SERVICE_ACCOUNT='${JSON.stringify(sa)}'\n`);
-  execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "chat_noibo", "--local", "--persist-to", state], { stdio: "ignore" });
+  for (const db of ["chat_noibo", "chat_noibo_audit"])
+    execFileSync("npx", ["wrangler", "d1", "migrations", "apply", db, "--local", "--persist-to", state], { stdio: "ignore" });
   proc = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", state, "--env-file", join(state, "test.env")], {
     stdio: "ignore",
     detached: true,
@@ -559,4 +560,63 @@ test("nhóm lớn (150 người) và danh sách hội thoại", async () => {
   assert.equal(dm.name, "Trần Thị Bình", "tên chat 1-1 vẫn đúng sau khi gộp truy vấn");
   assert.ok(dm.last_message.text.length > 0);
   assert.ok(r.data.conversations.every((c) => c.last_seq === 0 || c.last_message), "hội thoại nào có tin đều có tin cuối");
+});
+
+test("nhật ký nằm ở DB riêng; xem lại cùng một tệp chỉ ghi một lần", async () => {
+  const q = (db, sql) => JSON.parse(execFileSync("npx", ["wrangler", "d1", "execute", db, "--local", "--persist-to", state, "--json", "--command", sql], { encoding: "utf8" }))[0].results;
+  const r = await api(`/api/conversations/${ctx.managed}/files`, {
+    token: ctx.an, method: "POST", headers: { "content-type": "text/plain", "x-file-name": "lap.txt" }, raw: "xem nhiều lần",
+  });
+  const fid = r.data.message.file.id;
+  for (let i = 0; i < 5; i++) assert.equal((await api(`/api/files/${fid}`, { token: ctx.an })).status, 200);
+  assert.equal(q("chat_noibo_audit", `SELECT COUNT(*) AS n FROM audit WHERE action='file_view' AND target='${fid}'`)[0].n, 1);
+  assert.equal(q("chat_noibo", "SELECT COUNT(*) AS n FROM audit")[0].n, 0, "DB tin nhắn không còn ghi nhật ký");
+  assert.ok(q("chat_noibo_audit", "SELECT COUNT(*) AS n FROM audit")[0].n > 50);
+});
+
+test("lưu trữ tin cũ ra R2: lịch sử vẫn liền mạch, số thứ tự không bị cấp lại", async () => {
+  const q = (db, sql) => JSON.parse(execFileSync("npx", ["wrangler", "d1", "execute", db, "--local", "--persist-to", state, "--json", "--command", sql], { encoding: "utf8" }))[0].results;
+  let r = await api("/api/admin/groups", { token: ctx.admin, method: "POST", body: { name: "Lưu trữ thử", member_ids: [ctx.nv001_id] } });
+  const g = r.data.conversation_id;
+  for (let i = 1; i <= 30; i++) {
+    if (i === 15) {
+      await api(`/api/conversations/${g}/files`, { token: ctx.an, method: "POST", headers: { "content-type": "text/plain", "x-file-name": "giua.txt" }, raw: "tệp ở giữa" });
+    }
+    await api(`/api/conversations/${g}/messages`, { token: ctx.an, method: "POST", body: { text: `Tin số ${i}` } });
+  }
+  const before = (await api(`/api/conversations/${g}/messages?limit=100`, { token: ctx.an })).data.messages;
+  assert.equal(before.length, 32); // tin hệ thống + 30 tin chữ + 1 tệp
+
+  r = await api("/api/admin/maintenance/archive", { token: ctx.admin, method: "POST", body: { messages_older_than_days: 0 } });
+  assert.equal(r.status, 200);
+  assert.ok(r.data.messages >= 31);
+  assert.equal(q("chat_noibo", `SELECT COUNT(*) AS n FROM messages WHERE conversation_id='${g}'`)[0].n, 1, "chỉ còn tin có tệp trong D1");
+
+  // Đọc lại cả trang và theo từng trang nhỏ: giống hệt trước khi lưu trữ
+  const all = (await api(`/api/conversations/${g}/messages?limit=100`, { token: ctx.an })).data.messages;
+  assert.deepEqual(all.map((m) => [m.seq, m.text, m.file?.name ?? null]), before.map((m) => [m.seq, m.text, m.file?.name ?? null]));
+  let pages = [], cursor = null;
+  for (;;) {
+    const page = (await api(`/api/conversations/${g}/messages?limit=7${cursor ? `&before=${cursor}` : ""}`, { token: ctx.an })).data.messages;
+    if (!page.length) break;
+    pages = [...page, ...pages];
+    cursor = page[0].seq;
+  }
+  assert.deepEqual(pages.map((m) => m.seq), before.map((m) => m.seq));
+  assert.equal((await api(`/api/files/${before.find((m) => m.file).file.id}`, { token: ctx.an })).status, 200, "tệp vẫn mở được");
+
+  // Tin mới tiếp tục số thứ tự, không trùng tin đã lưu trữ
+  r = await api(`/api/conversations/${g}/messages`, { token: ctx.an, method: "POST", body: { text: "Tin sau lưu trữ" } });
+  assert.equal(r.data.message.seq, 33);
+
+  // Nhật ký cũ ra R2 và tải về được
+  r = await api("/api/admin/maintenance/archive", { token: ctx.admin, method: "POST", body: { audit_older_than_days: 0 } });
+  assert.ok(r.data.audit > 0);
+  r = await api("/api/admin/audit-archives", { token: ctx.admin });
+  assert.ok(r.data.archives.length >= 1);
+  const dl = await api(`/api/admin/audit-archives/file?key=${encodeURIComponent(r.data.archives[0].key)}`, { token: ctx.admin });
+  assert.equal(dl.status, 200);
+  const { gunzipSync } = await import("node:zlib");
+  const lines = gunzipSync(Buffer.from(dl.data)).toString("utf8").split("\n");
+  assert.ok(JSON.parse(lines[0]).action, "nhật ký lưu trữ đọc được");
 });

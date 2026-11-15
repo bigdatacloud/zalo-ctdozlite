@@ -16,6 +16,7 @@
 :root[data-theme="dark"]{--bg:#1d1f23;--panel:#282c34;--text:#d7dae0;--muted:#8e96a5;--border:#3e4451;--primary:#528bff;
   --danger:#e06c75;--warn:#e5c07b;--ok:#98c379;--hover:#323842;--chip:#2c313a;--ext:#c678dd;color-scheme:dark}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 button,input,select,textarea{font:inherit;color:inherit}
 input,select,textarea{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;width:100%}
@@ -507,9 +508,18 @@ async function renderSettings(m) {
     <label>Nhân viên tự tạo nhóm thường<select data-k="members_can_create_groups"><option value="1">Cho phép (nhóm thường luôn bị cấm gửi tệp)</option><option value="0">Chỉ quản trị viên tạo nhóm</option></select></label>
     <label>Điện thoại cá nhân mở tệp trong nhóm nội bộ<select data-k="mobile_untrusted_files"><option value="view">Chỉ xem trong ứng dụng</option><option value="deny">Cấm mở</option><option value="allow">Theo quyền của nhóm</option></select></label>
     <label>Nội dung thông báo trên màn hình khóa điện thoại<select data-k="push_content"><option value="sender">Tên người gửi và tên nhóm (không kèm nội dung tin)</option><option value="none">Chỉ "Bạn có tin nhắn mới"</option></select></label>
+    <label>Chuyển tin chữ cũ sang kho lưu trữ sau<select data-k="archive_after_days"><option value="90">90 ngày</option><option value="180">180 ngày</option><option value="365">1 năm</option><option value="730">2 năm</option></select></label>
+    <div class="muted small">Tin đã lưu trữ vẫn xem được trong ứng dụng khi cuộn lên. Việc lưu trữ giúp cơ sở dữ liệu không chạm giới hạn 10 GB. Chạy tự động lúc 02:17 hằng đêm.</div>
+    <label>Giữ nhật ký kiểm soát trực tuyến trong<select data-k="audit_keep_days"><option value="365">1 năm</option><option value="730">2 năm</option><option value="1095">3 năm</option><option value="1825">5 năm</option></select></label>
+    <div class="muted small">Nhật ký cũ hơn được nén và cất vào kho, tải về được ở mục Nhật ký → "Nhật ký đã lưu trữ".</div>
+    <div><button type="button" id="runArchive">Chạy lưu trữ ngay</button></div>
     <div class="muted small">Thông báo đi qua máy chủ Google (Android) và Apple (iPhone). Nội dung tin nhắn không bao giờ được gửi qua đó.</div>
     <div class="muted small">Nhóm có người bên ngoài luôn áp dụng đúng quyền của nhóm (đối tác cần tải được đơn hàng, bản vẽ gửi cho họ).</div>
   </div>`;
+  $("#runArchive").onclick = async () => {
+    try { const r = await api("/api/admin/maintenance/archive", { method: "POST", body: {} }); toast(`Đã lưu trữ ${r.messages} tin và ${r.audit} dòng nhật ký`); }
+    catch (e) { toast(e.message, true); }
+  };
   m.querySelectorAll("select").forEach((el) => { el.value = s[el.dataset.k];
     el.onchange = async () => { try { await api("/api/admin/settings", { method: "PATCH", body: { [el.dataset.k]: el.value } }); toast("Đã lưu chính sách"); } catch (e) { toast(e.message, true); } }; });
 }
@@ -524,19 +534,20 @@ const ACT = {
   admin_add_members: "Thêm thành viên (QT)", admin_remove_member: "Xóa thành viên (QT)", admin_settings: "Đổi chính sách",
   admin_read_conversation: "Quản trị xem hội thoại", expire_sweep: "Thu hồi do hết hạn", upload_pending: "Gửi tệp ra ngoài (chờ duyệt)", approve_external: "Duyệt gửi tệp ra ngoài",
   reject_external: "Từ chối gửi tệp ra ngoài", cancel_external: "Rút lại tệp chờ duyệt", approval_preview: "Xem trước tệp chờ duyệt",
-  admin_set_approver: "Giao/bỏ quyền duyệt", bootstrap: "Khởi tạo hệ thống",
+  admin_set_approver: "Giao/bỏ quyền duyệt", admin_archive: "Chạy lưu trữ", admin_download_audit_archive: "Tải nhật ký lưu trữ", bootstrap: "Khởi tạo hệ thống",
 };
 async function renderAudit(m, append) {
   if (!append) {
     m.innerHTML = `<div class="bar">
       <select id="aa"><option value="">Mọi hành động</option>${Object.entries(ACT).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
       <select id="al"><option value="">Cả được phép và bị chặn</option><option value="0">Chỉ bị chặn</option><option value="1">Chỉ được phép</option></select>
-      <span class="grow"></span><button id="ar">Làm mới</button></div>
+      <span class="grow"></span><button id="arx">Nhật ký đã lưu trữ</button><button id="ar">Làm mới</button></div>
       <div class="card"><table><thead><tr><th>Thời gian</th><th>Người</th><th>Hành động</th><th>Kết quả</th><th>Chi tiết</th></tr></thead><tbody id="atb"></tbody></table></div>
       <div class="bar" style="justify-content:center;margin-top:12px"><button id="more">Xem thêm</button></div>`;
     state.audit = [];
     $("#aa").onchange = $("#al").onchange = $("#ar").onclick = () => renderAudit(m);
     $("#more").onclick = () => renderAudit(m, true);
+    $("#arx").onclick = auditArchivesDialog;
   }
   const p = new URLSearchParams({ limit: "100" });
   if ($("#aa").value) p.set("action", $("#aa").value);
@@ -551,6 +562,23 @@ async function renderAudit(m, append) {
     <td>${esc(ACT[a.action] || a.action)}</td>
     <td>${a.allowed ? `<span class="chip ok">Được phép</span>` : `<span class="chip bad">Bị chặn</span>`}</td>
     <td class="small">${esc(a.detail)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Chưa có dữ liệu</td></tr>`;
+}
+
+async function auditArchivesDialog() {
+  const list = (await api("/api/admin/audit-archives")).archives.sort((a, b) => b.key.localeCompare(a.key));
+  const f = openDialog(`<h2>Nhật ký đã lưu trữ</h2>
+    <div class="muted small">Mỗi tệp là một lô nhật ký (định dạng JSON Lines, nén gzip). Mỗi lần tải về đều được ghi nhật ký.</div>
+    <div class="picker">${list.map((a) => `<label><span style="flex:1">${esc(a.key.split("/").pop())} <span class="muted small">${fmtSize(a.size)}</span></span>
+      <button type="button" class="small" data-k="${esc(a.key)}">Tải về</button></label>`).join("") || `<div class="empty">Chưa có</div>`}</div>
+    <div class="actions"><button class="primary">Đóng</button></div>`, () => {});
+  f.querySelector(".picker").onclick = async (e) => {
+    const key = e.target.dataset?.k; if (!key) return; e.preventDefault();
+    try {
+      const r = await fetch(`${API}/api/admin/audit-archives/file?key=${encodeURIComponent(key)}`, { headers: { authorization: "Bearer " + TOKEN } });
+      if (!r.ok) throw new Error("Không tải được");
+      const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = key.split("/").pop(); a.click();
+    } catch (err) { toast(err.message, true); }
+  };
 }
 
 // ------------------------------------------------------------------ Khởi động

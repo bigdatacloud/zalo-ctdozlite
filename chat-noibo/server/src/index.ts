@@ -2,8 +2,9 @@ import { authenticate, createSession, hashPassword, Principal, validatePassword,
 import { canForward, canJoin, canUpload, clientFlags, ConvPolicyRow, defaultsFor, fileAccess, isApprover, needsApproval, requireInternal } from "./policy";
 import { approvalRoutes, notifyApprovers, pendingOut } from "./approvals";
 import { pushNewMessage } from "./push";
+import { ARCHIVE_CRON, archiveAudit, archiveMessages, mergeArchived } from "./archive";
 import { adminRoutes, sweepExpired } from "./admin";
-import { audit, Env, getSettings, HttpError, json, newId, now, readJson, sha256Hex, str } from "./util";
+import { audit, auditDb, Env, getSettings, HttpError, json, newId, now, readJson, str } from "./util";
 
 export { UserHub } from "./hub";
 
@@ -55,8 +56,12 @@ export default {
     for (const [k, v] of Object.entries(cors(env))) h.set(k, v);
     return new Response(res.body, { status: res.status, headers: h });
   },
-  async scheduled(_ev: ScheduledController, env: Env, exec: ExecutionContext) {
-    exec.waitUntil(sweepExpired(env));
+  async scheduled(ev: ScheduledController, env: Env, exec: ExecutionContext) {
+    if (ev.cron === ARCHIVE_CRON) {
+      exec.waitUntil(archiveMessages(env).then(() => archiveAudit(env)).catch((e) => console.error("archive", e)));
+    } else {
+      exec.waitUntil(sweepExpired(env));
+    }
   },
 } satisfies ExportedHandler<Env>;
 
@@ -167,15 +172,15 @@ export async function insertMessage(
   const id = newId("m");
   const t = now();
   await c.env.DB.batch([
+    // Bộ đếm nằm ở conversations.last_seq, KHÔNG lấy MAX(seq) của bảng messages: tin cũ có thể
+    // đã chuyển sang lưu trữ, lấy MAX sẽ cấp lại số thứ tự đã dùng. Batch chạy trong một giao dịch.
+    c.env.DB.prepare("UPDATE conversations SET last_seq = last_seq + 1, last_msg_at = ? WHERE id = ?").bind(t, convId),
     c.env.DB.prepare(
       `INSERT INTO messages(id,conversation_id,seq,sender_id,kind,text,file_id,reply_to,forwarded_from,client_id,created_at)
-       SELECT ?, ?, COALESCE(MAX(seq),0)+1, ?, ?, ?, ?, ?, ?, ?, ? FROM messages WHERE conversation_id = ?`,
+       SELECT ?, ?, last_seq, ?, ?, ?, ?, ?, ?, ?, ? FROM conversations WHERE id = ?`,
     ).bind(id, convId, senderId, m.kind, m.text, m.file_id ?? null, m.reply_to ?? null, m.forwarded_from ?? null, m.client_id ?? null, t, convId),
     c.env.DB.prepare(
-      `UPDATE conversations SET last_seq = (SELECT MAX(seq) FROM messages WHERE conversation_id = ?), last_msg_at = ? WHERE id = ?`,
-    ).bind(convId, t, convId),
-    c.env.DB.prepare(
-      `UPDATE members SET last_read_seq = (SELECT MAX(seq) FROM messages WHERE conversation_id = ?) WHERE conversation_id = ? AND user_id = ?`,
+      `UPDATE members SET last_read_seq = (SELECT last_seq FROM conversations WHERE id = ?) WHERE conversation_id = ? AND user_id = ?`,
     ).bind(convId, convId, senderId),
   ]);
   const out = msgOut((await loadMsg(c.env, id))!);
@@ -237,7 +242,7 @@ route("POST", "/api/auth/login", async (c) => {
   const platform = ["windows", "android", "ios", "web"].includes(b.platform ?? "") ? b.platform! : "other";
 
   const since = now() - 15 * 60 * 1000;
-  const fails = await c.env.DB.prepare(
+  const fails = await auditDb(c.env).prepare(
     "SELECT COUNT(*) AS n FROM audit WHERE action = 'login' AND allowed = 0 AND target = ? AND at > ?",
   )
     .bind(username.toLowerCase(), since)
@@ -482,10 +487,14 @@ route("GET", "/api/conversations/:id/messages", async (c, p) => {
       .bind(p.id, Number(after), limit)
       .all<MsgRow>();
   } else {
+    const b = before ? Number(before) : Number.MAX_SAFE_INTEGER;
     r = await c.env.DB.prepare(`${MSG_SELECT} WHERE m.conversation_id = ? AND m.seq < ? ORDER BY m.seq DESC LIMIT ?`)
-      .bind(p.id, before ? Number(before) : Number.MAX_SAFE_INTEGER, limit)
+      .bind(p.id, b, limit)
       .all<MsgRow>();
-    r.results.reverse();
+    // Tin chữ cũ đã chuyển sang R2: ghép lại để người dùng cuộn lên vẫn thấy liền mạch.
+    const merged = (await mergeArchived(c.env, p.id, b, limit, r.results)) as MsgRow[];
+    merged.reverse();
+    return json({ messages: merged.map(msgOut) });
   }
   return json({ messages: r.results.map(msgOut) });
 });
@@ -704,14 +713,14 @@ export async function assertCanJoin(env: Env, conv: { external: number; organiza
 
 /** D1 cho tối đa 100 tham số mỗi câu lệnh: tra người dùng theo lô 90. */
 export async function usersByIds(env: Env, ids: string[]) {
-  const out: { id: string; kind: string; organization: string; display_name: string; status: string }[] = [];
+  const out: { id: string; username: string; kind: string; organization: string; display_name: string; status: string }[] = [];
   for (let i = 0; i < ids.length; i += 90) {
     const part = ids.slice(i, i + 90);
     const r = await env.DB.prepare(
-      `SELECT id, kind, organization, display_name, status FROM users WHERE id IN (${part.map(() => "?").join(",")})`,
+      `SELECT id, username, kind, organization, display_name, status FROM users WHERE id IN (${part.map(() => "?").join(",")})`,
     )
       .bind(...part)
-      .all<{ id: string; kind: string; organization: string; display_name: string; status: string }>();
+      .all<{ id: string; username: string; kind: string; organization: string; display_name: string; status: string }>();
     out.push(...r.results);
   }
   return out;

@@ -11,6 +11,13 @@ database_name = "chat_noibo"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
+# Nhật ký kiểm soát, DB riêng. Tạo bằng: npx wrangler d1 create chat_noibo_audit --location=apac
+[[d1_databases]]
+binding = "AUDIT"
+database_name = "chat_noibo_audit"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "migrations-audit"
+
 # Kho tệp đính kèm. Tạo bằng: npx wrangler r2 bucket create chat-noibo-files
 [[r2_buckets]]
 binding = "FILES"
@@ -27,7 +34,7 @@ new_sqlite_classes = ["UserHub"]
 
 # Mỗi 15 phút: thu hồi phiên của tài khoản (thường là tài khoản bên ngoài) đã hết hạn.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/15 * * * *", "17 19 * * *"]   # 19:17 UTC = 02:17 giờ VN: lưu trữ tin/nhật ký cũ
 
 # Trang quản trị tĩnh: https://<tên-miền>/admin/
 [assets]

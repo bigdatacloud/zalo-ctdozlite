@@ -2,6 +2,8 @@ import type { UserHub } from "./hub";
 
 export interface Env {
   DB: D1Database;
+  /** Nhật ký kiểm soát (DB riêng). Không cấu hình thì dùng chung DB. */
+  AUDIT?: D1Database;
   FILES: R2Bucket;
   HUB: DurableObjectNamespace<UserHub>;
   CORS_ORIGIN: string;
@@ -75,6 +77,11 @@ export function bool01(v: unknown): 0 | 1 | undefined {
   return v ? 1 : 0;
 }
 
+export const auditDb = (env: Env) => env.AUDIT ?? env.DB;
+
+/** Hành động chỉ ghi một lần cho cùng người + cùng đối tượng trong 12 giờ (xem ảnh/tệp lặp lại). */
+const DEDUPE_ACTIONS = new Set(["file_view", "approval_preview"]);
+
 export async function audit(
   env: Env,
   e: {
@@ -87,19 +94,22 @@ export async function audit(
     detail?: string;
   },
 ) {
-  await env.DB.prepare(
-    "INSERT INTO audit(at,user_id,device_id,action,conversation_id,target,allowed,detail) VALUES (?,?,?,?,?,?,?,?)",
-  )
-    .bind(
-      now(),
-      e.user_id ?? null,
-      e.device_id ?? null,
-      e.action,
-      e.conversation_id ?? null,
-      e.target ?? null,
-      e.allowed ? 1 : 0,
-      e.detail ?? "",
-    )
+  const t = now();
+  const vals = [t, e.user_id ?? null, e.device_id ?? null, e.action, e.conversation_id ?? null, e.target ?? null, e.allowed ? 1 : 0, e.detail ?? ""];
+  if (DEDUPE_ACTIONS.has(e.action) && e.allowed && e.user_id) {
+    await auditDb(env)
+      .prepare(
+        `INSERT INTO audit(at,user_id,device_id,action,conversation_id,target,allowed,detail)
+         SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS (
+           SELECT 1 FROM audit WHERE user_id = ? AND at > ? AND action = ? AND target IS ? AND allowed = 1)`,
+      )
+      .bind(...vals, e.user_id, t - 12 * 3600 * 1000, e.action, e.target ?? null)
+      .run();
+    return;
+  }
+  await auditDb(env)
+    .prepare("INSERT INTO audit(at,user_id,device_id,action,conversation_id,target,allowed,detail) VALUES (?,?,?,?,?,?,?,?)")
+    .bind(...vals)
     .run();
 }
 
