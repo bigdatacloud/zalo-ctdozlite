@@ -15,7 +15,8 @@ env:
   FCM_DEFINES: >-
     --dart-define=FCM_PROJECT_ID=${{ vars.FCM_PROJECT_ID }}
     --dart-define=FCM_SENDER_ID=${{ vars.FCM_SENDER_ID }}
-    --dart-define=FCM_API_KEY=${{ vars.FCM_API_KEY }}
+    --dart-define=FCM_API_KEY_ANDROID=${{ vars.FCM_API_KEY_ANDROID }}
+    --dart-define=FCM_API_KEY_IOS=${{ vars.FCM_API_KEY_IOS }}
     --dart-define=FCM_APP_ID_ANDROID=${{ vars.FCM_APP_ID_ANDROID }}
     --dart-define=FCM_APP_ID_IOS=${{ vars.FCM_APP_ID_IOS }}
 

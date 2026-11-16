@@ -8,12 +8,15 @@ import 'package:flutter/services.dart';
 import 'api.dart';
 
 /// Cấu hình Firebase gắn lúc build (không cần google-services.json / GoogleService-Info.plist):
-///   --dart-define=FCM_PROJECT_ID=... --dart-define=FCM_SENDER_ID=... --dart-define=FCM_API_KEY=...
+///   --dart-define=FCM_PROJECT_ID=... --dart-define=FCM_SENDER_ID=...
+///   --dart-define=FCM_API_KEY_ANDROID=... --dart-define=FCM_API_KEY_IOS=...
 ///   --dart-define=FCM_APP_ID_ANDROID=1:...:android:... --dart-define=FCM_APP_ID_IOS=1:...:ios:...
 /// Thiếu cấu hình thì thông báo đẩy tắt, ứng dụng vẫn chạy bình thường.
 const _projectId = String.fromEnvironment('FCM_PROJECT_ID');
 const _senderId = String.fromEnvironment('FCM_SENDER_ID');
-const _apiKey = String.fromEnvironment('FCM_API_KEY');
+// Firebase cấp khóa API riêng cho từng nền tảng (mỗi khóa bị giới hạn theo app).
+const _apiKeyAndroid = String.fromEnvironment('FCM_API_KEY_ANDROID');
+const _apiKeyIos = String.fromEnvironment('FCM_API_KEY_IOS');
 const _appIdAndroid = String.fromEnvironment('FCM_APP_ID_ANDROID');
 const _appIdIos = String.fromEnvironment('FCM_APP_ID_IOS');
 
@@ -32,7 +35,9 @@ class Push {
 
   bool get _mobile => !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
 
-  String get _appId => defaultTargetPlatform == TargetPlatform.iOS ? _appIdIos : _appIdAndroid;
+  bool get _ios => defaultTargetPlatform == TargetPlatform.iOS;
+  String get _appId => _ios ? _appIdIos : _appIdAndroid;
+  String get _apiKey => _ios ? _apiKeyIos : _apiKeyAndroid;
 
   bool get configured => _mobile && _projectId.isNotEmpty && _senderId.isNotEmpty && _apiKey.isNotEmpty && _appId.isNotEmpty;
 

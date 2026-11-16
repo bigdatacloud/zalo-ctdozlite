@@ -150,11 +150,11 @@ Ngoài tin nhắn, còn có thông báo "Tệp chờ bạn duyệt" cho người
 
 Cài đặt (một lần):
 1. [console.firebase.google.com](https://console.firebase.google.com) → tạo dự án (không cần Google Analytics).
-2. Thêm ứng dụng **Android** với package `work.eco_tech.chat` và ứng dụng **iOS** với bundle `work.eco-tech.chat`. Không cần tải `google-services.json` hay `GoogleService-Info.plist`. Ghi lại *Project ID*, *Sender ID*, *Web API Key* và *App ID* của từng ứng dụng.
+2. Thêm ứng dụng **Android** với package `work.eco_tech.chat` và ứng dụng **iOS** với bundle `work.eco-tech.chat`. Không cần tải `google-services.json` hay `GoogleService-Info.plist`. Tải `google-services.json` và `GoogleService-Info.plist` chỉ để chép số: *Project ID*, *Sender ID*, *App ID* và *API key* của từng ứng dụng (Android và iOS mỗi bên một khóa riêng). Không đưa hai tệp này vào mã nguồn.
 3. **iPhone**: Apple Developer → Keys → tạo khóa APNs (.p8) → tải lên Firebase (Project settings → Cloud Messaging → Apple app configuration). Trong Xcode: Runner → Signing & Capabilities → **+ Push Notifications**.
 4. Máy chủ: Project settings → Service accounts → *Generate new private key*, rồi
    `npx wrangler secret put FCM_SERVICE_ACCOUNT < khoa-tai-khoan-dich-vu.json`. Xóa tệp khóa sau khi nạp.
-5. Đặt các biến kho GitHub `FCM_PROJECT_ID`, `FCM_SENDER_ID`, `FCM_API_KEY`, `FCM_APP_ID_ANDROID`, `FCM_APP_ID_IOS` (Settings → Variables) để CI build app có thông báo. Build tay thì thêm các `--dart-define` tương ứng.
+5. Đặt các biến kho GitHub `FCM_PROJECT_ID`, `FCM_SENDER_ID`, `FCM_API_KEY_ANDROID`, `FCM_API_KEY_IOS`, `FCM_APP_ID_ANDROID`, `FCM_APP_ID_IOS` (Settings → Variables) để CI build app có thông báo. Build tay thì thêm các `--dart-define` tương ứng.
 
 Máy Huawei đời mới không có dịch vụ Google nên sẽ không nhận được thông báo khi app đang tắt.
 
